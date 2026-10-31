@@ -31,11 +31,11 @@ the Worker bundles. **No feature below has been tested on two phones yet**: that
 | ✅ | Relay frame format | `[D7][01][num][wire]`, pinned by a golden test |
 | 🟨 | Names in relay presence | Only with Discover on, only as a fallback label. Pre-update builds can't parse the named form: upgrade all phones together |
 | ✅ | Broker username / password | Password Keystore-encrypted; no plain-TCP fallback when set |
-| 🟨 | Second relay (Cloudflare Worker) | Code done, used in parallel with HiveMQ. Needs `wrangler deploy` + `dtn.workerHost`. Node ids unauthenticated (same as MQTT) |
+| ✅ | Second relay (Cloudflare Worker) | Deployed (`dtnmesh.vrishankrainaphotos1.workers.dev`, auto-deploy from GitHub Actions); smoke test 2026-10-31: roster, presence, bundle delivered, publisher id stamped. Node ids unauthenticated (same as MQTT) |
 | ✅ | Relay status | One indicator with a subtitle naming which relay is up |
 | 🟨 | WebRTC direct (Settings › Internet direct) | Real data channels, signed + encrypted signaling, perfect negotiation, ≤ 4 sessions, 10 min idle. Experimental, off by default, untested on devices; a network switch drops the session until a relay re-negotiates |
 | ✅ | Bring your own TURN | Default / Metered / coturn (static or shared secret) / JSON; per-provider encrypted slots; never sent to peers |
-| 🟨 | Worker-minted TURN | Written, not deployed; Metered response field names to confirm with one curl (see `cloud/README.md`). The stop-gap default key is still in `local.properties` |
+| 🟨 | Worker-minted TURN | Deployed, but the Worker secrets `METERED_SECRET_KEY` / `METERED_DOMAIN` are not set: `/turn` returns public STUN only (the app then uses the stop-gap key from `local.properties`) |
 
 ## Links and identity
 | | Feature | Notes |
@@ -43,7 +43,7 @@ the Worker bundles. **No feature below has been tested on two phones yet**: that
 | ✅ | Link / code parser + Paste | `https://<host>/c#…`, `dtnid:`, `dtnid://`, percent-encoded; confirm screen before acting |
 | ✅ | Share link (contact, group, own identity) | Falls back to the plain code without a Worker host; group-link warning |
 | ✅ | Fallback web page | Self-hosted QR library, strict CSP, no referrer; working Open in app |
-| 🟨 | App Links (tap to open) | Needs the deployed Worker, `dtn.workerHost`, and the second signing fingerprint in `assetlinks.json` |
+| 🟨 | App Links (tap to open) | Host set and `assetlinks.json` served; it lists the debug key only. Add the release / Play signing key when you sign a release; confirm with `adb shell pm get-app-links com.dtn.mesh` |
 | 🟨 | Name#tag handles + search | 4-hex tags are display-only and can collide; search must show full ids before acting |
 
 ## UI
@@ -68,6 +68,6 @@ the Worker bundles. **No feature below has been tested on two phones yet**: that
 | | Item |
 |---|---|
 | ❌ | Two-phone tests: Discover-off first DM, ✓ → ✓✓, A → B → C, swipe, notifications on Samsung, WebRTC up/down, links |
-| ❌ | Deploy the Worker, set `dtn.workerHost`, add the second fingerprint, rotate the stop-gap TURN key |
+| 🟨 | Worker deployed and `dtn.workerHost` set; still: Worker TURN secrets, release fingerprint, then rotate and remove the stop-gap TURN key |
 | ❌ | Per-chat mute |
 | ❌ | Delete the leftover `scratch/` folder (another tool's patch scripts) |

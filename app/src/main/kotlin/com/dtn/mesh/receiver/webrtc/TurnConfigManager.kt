@@ -102,7 +102,9 @@ class TurnConfigManager @Inject constructor(
         override suspend fun resolve(s: TurnSettings): IceResolution {
             if (com.dtn.mesh.BuildConfig.WORKER_HOST.isNotBlank()) {
                 fetchWorkerTurn(com.dtn.mesh.BuildConfig.WORKER_HOST).getOrNull()?.let {
-                    if (it.isNotEmpty()) return IceResolution(it, "Cloudflare Worker TURN (${com.dtn.mesh.BuildConfig.WORKER_HOST})")
+                    // Only a list WITH TURN counts: an unconfigured Worker answers STUN only, and the
+                    // build's stop-gap TURN below is better than that.
+                    if (it.any { s -> s.isTurn }) return IceResolution(it, "Cloudflare Worker TURN (${com.dtn.mesh.BuildConfig.WORKER_HOST})")
                 }
             }
             if (DefaultTurnConfig.hasSharedApiKey) {
