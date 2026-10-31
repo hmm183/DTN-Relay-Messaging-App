@@ -1,5 +1,9 @@
 package com.dtn.mesh.ui.peers
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
+import com.dtn.mesh.ui.components.OutlineButton
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -71,6 +75,8 @@ fun PeersPage(
     var segment by rememberSaveable { mutableIntStateOf(0) }
     var query by rememberSaveable { mutableStateOf("") }
     var addSheet by rememberSaveable { mutableStateOf(false) }
+    var showPasteDialog by rememberSaveable { mutableStateOf(false) }
+    var showUsernameSearchDialog by rememberSaveable { mutableStateOf(false) }
     val actions = rememberContactActions(viewModel)
     val qr = rememberQrActions(
         prompt = "Scan a contact's QR (My identity on their phone)",
@@ -189,7 +195,11 @@ fun PeersPage(
                         onClick = { addSheet = false; qr.scan() })
                     SettingRow("Upload QR", icon = DtnIcons.Copy, subtitle = "A screenshot or shared image of their QR",
                         onClick = { addSheet = false; qr.upload() })
-                    SettingRow("My QR", icon = DtnIcons.Peers, subtitle = "Show yours so they can add you",
+                    SettingRow("Paste link / code", icon = DtnIcons.Copy, subtitle = "Paste an invite link or dtnid/dtngrp code",
+                        onClick = { addSheet = false; showPasteDialog = true })
+                    SettingRow("Search username if online", icon = DtnIcons.Peers, subtitle = "Find by Name#1234 or node ID",
+                        onClick = { addSheet = false; showUsernameSearchDialog = true })
+                    SettingRow("My QR", icon = DtnIcons.Broadcast, subtitle = "Show yours so they can add you",
                         onClick = { addSheet = false; onShowMyQr() })
                 }
                 Spacer(Modifier.height(12.dp))
@@ -197,6 +207,127 @@ fun PeersPage(
             }
         }
     }
+
+    if (showPasteDialog) {
+        var pastedText by remember { mutableStateOf("") }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showPasteDialog = false },
+            title = { Text("Paste invite link or code", style = DtnType.RowTitle) },
+            text = {
+                Column {
+                    Text("Paste an invite link, dtnid: or dtngrp: code to add a contact or join a group.", style = DtnType.Meta)
+                    Spacer(Modifier.height(8.dp))
+                    androidx.compose.material3.OutlinedTextField(
+                        value = pastedText,
+                        onValueChange = { pastedText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("https://... or dtnid:2:...") },
+                        shape = DtnShapes.Field,
+                        singleLine = false,
+                        maxLines = 4,
+                    )
+                }
+            },
+            confirmButton = {
+                PrimaryButton("Continue", onClick = {
+                    showPasteDialog = false
+                    viewModel.handleIncomingLink(pastedText)
+                }, enabled = pastedText.isNotBlank())
+            },
+            dismissButton = {
+                OutlineButton("Cancel", onClick = { showPasteDialog = false })
+            },
+            containerColor = DtnColors.Background,
+        )
+    }
+
+    if (showUsernameSearchDialog) {
+        var userQuery by remember { mutableStateOf("") }
+        val allPeers by viewModel.peerList.collectAsState()
+        val matchingPeers = remember(allPeers, userQuery) {
+            if (userQuery.trim().length < 2) emptyList()
+            else {
+                val q = userQuery.trim().lowercase()
+                allPeers.filter { p ->
+                    val handle = com.dtn.mesh.model.NodeId.discordHandle(p.displayName(), p.nodeId).lowercase()
+                    handle.contains(q) || p.nodeId.lowercase().contains(q) || p.nodeId.takeLast(4).lowercase() == q.removePrefix("#")
+                }
+            }
+        }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showUsernameSearchDialog = false },
+            title = { Text("Search username if online", style = DtnType.RowTitle) },
+            text = {
+                Column(Modifier.fillMaxWidth()) {
+                    Text("Search local contacts, nearby devices, or online relay peers (e.g. Alice#769a or !aabbccdd).", style = DtnType.Meta)
+                    Spacer(Modifier.height(8.dp))
+                    androidx.compose.material3.OutlinedTextField(
+                        value = userQuery,
+                        onValueChange = { userQuery = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Name#1234 or node id") },
+                        shape = DtnShapes.Field,
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    if (userQuery.trim().length >= 2 && matchingPeers.isEmpty()) {
+                        Text("No matching peers found locally or on the relay presence.", style = DtnType.Meta)
+                        if (userQuery.trim().length >= 8) {
+                            Spacer(Modifier.height(6.dp))
+                            PrimaryButton("Send announce request to '${userQuery.trim()}'", onClick = {
+                                val target = if (userQuery.trim().startsWith("!")) userQuery.trim() else "!${userQuery.trim()}"
+                                viewModel.requestAnnounce(target)
+                                showUsernameSearchDialog = false
+                            })
+                        }
+                    } else {
+                        androidx.compose.foundation.lazy.LazyColumn(
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp)
+                        ) {
+                            items(matchingPeers, key = { it.nodeId }) { p ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            showUsernameSearchDialog = false
+                                            if (p.added || p.hasKeys) {
+                                                viewModel.openChat(p.nodeId)
+                                            } else {
+                                                viewModel.requestAnnounce(p.nodeId)
+                                            }
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(p.displayName(), style = DtnType.RowTitle)
+                                        Text(com.dtn.mesh.model.NodeId.discordHandle(p.displayName(), p.nodeId), style = DtnType.Meta)
+                                    }
+                                    if (!p.added && !p.hasKeys) {
+                                        PrimaryButton("Request", onClick = {
+                                            viewModel.requestAnnounce(p.nodeId)
+                                            showUsernameSearchDialog = false
+                                        })
+                                    } else {
+                                        OutlineButton("Message", onClick = {
+                                            showUsernameSearchDialog = false
+                                            viewModel.openChat(p.nodeId)
+                                        })
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                OutlineButton("Close", onClick = { showUsernameSearchDialog = false })
+            },
+            containerColor = DtnColors.Background,
+        )
+    }
+
 }
 
 /** A contact / device row with its reachability chip and ⋮ menu. */

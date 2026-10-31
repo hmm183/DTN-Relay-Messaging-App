@@ -72,6 +72,7 @@ fun GroupPage(viewModel: DtnViewModel, channel: Int, onBack: () -> Unit, onOpenC
     val group = groups.firstOrNull { it.channel == channel }
     var invite by remember { mutableStateOf<String?>(null) }
     var confirmLeave by rememberSaveable { mutableStateOf(false) }
+    var confirmShareLink by rememberSaveable { mutableStateOf(false) }
     val snackbars = remember { SnackbarHostState() }
     UserMessageSnackbars(viewModel, snackbars)
     LaunchedEffect(channel, group?.name) { viewModel.groupInvite(channel) { invite = it } }
@@ -110,12 +111,17 @@ fun GroupPage(viewModel: DtnViewModel, channel: Int, onBack: () -> Unit, onOpenC
                     else Box(Modifier.size(220.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 }
                 Spacer(Modifier.height(12.dp))
-                OutlineButton("Share invite", onClick = {
-                    val inv = invite ?: return@OutlineButton
-                    scope.launch {
-                        if (!QrShare.shareAsync(context, inv, "Share group invite")) viewModel.showMessage("Couldn't share the invite")
-                    }
-                }, enabled = invite != null, modifier = Modifier.fillMaxWidth())
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlineButton("Share invite QR", onClick = {
+                        val inv = invite ?: return@OutlineButton
+                        scope.launch {
+                            if (!QrShare.shareAsync(context, inv, "Share group invite")) viewModel.showMessage("Couldn't share the invite")
+                        }
+                    }, enabled = invite != null, modifier = Modifier.weight(1f))
+                    PrimaryButton("Share link", onClick = {
+                        confirmShareLink = true
+                    }, enabled = invite != null, modifier = Modifier.weight(1f))
+                }
             }
 
             PrimaryButton("Open chat", onClick = { onOpenChat(channel) }, modifier = Modifier.fillMaxWidth())
@@ -147,6 +153,22 @@ fun GroupPage(viewModel: DtnViewModel, channel: Int, onBack: () -> Unit, onOpenC
         }
     }
 
+    if (confirmShareLink && invite != null) {
+        ConfirmDialog(
+            title = "Share group link?",
+            text = "Anyone with this link can read this group.",
+            confirmLabel = "Share",
+            destructive = false,
+            onConfirm = {
+                confirmShareLink = false
+                val link = if (com.dtn.mesh.crypto.LinkGenerator.workerHost.isNotBlank()) {
+                    "https://${com.dtn.mesh.crypto.LinkGenerator.workerHost}/g#${invite}"
+                } else invite!!
+                com.dtn.mesh.crypto.LinkGenerator.shareText(context, "Group invite: ${group?.name}", link)
+            },
+            onDismiss = { confirmShareLink = false }
+        )
+    }
     if (confirmLeave && group != null) {
         ConfirmDialog(
             title = "Leave “${group.name}”?",

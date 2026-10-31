@@ -1,0 +1,13 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.dtn.mesh",
+      "sha256_cert_fingerprints": [
+        "5A:D6:FC:A4:3C:62:8A:EA:4B:37:8A:02:9E:CD:69:77:A8:12:1D:01:4D:B9:B7:C3:CE:F2:9C:EE:0C:CB:D0:BE"
+      ]
+    }
+  }
+]
+

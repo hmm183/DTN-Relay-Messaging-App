@@ -44,6 +44,14 @@ interface ChatDao {
     @Query("DELETE FROM chat_messages WHERE conv_key = :convKey")
     suspend fun deleteConversation(convKey: String)
 
+    /** SENDING / BUFFERED → SENT for one of OUR messages; leaves Delivered / Failed / Held rows untouched. */
+    @Query("UPDATE chat_messages SET status = 'SENT' WHERE id = :id AND direction = 'OUT' AND status IN ('SENDING', 'BUFFERED')")
+    suspend fun markSentIfSending(id: String)
+
+    /** Delete one specific message by its message id (Delete for me). */
+    @Query("DELETE FROM chat_messages WHERE id = :messageId")
+    suspend fun deleteMessage(messageId: String): Int
+
     /** Our messages in [convKey] that wait for a key change to be resolved (status HELD), oldest first. */
     @Query("SELECT * FROM chat_messages WHERE conv_key = :convKey AND direction = 'OUT' AND status = 'HELD' ORDER BY created_at_ms ASC")
     suspend fun getHeld(convKey: String): List<ChatMessageEntity>

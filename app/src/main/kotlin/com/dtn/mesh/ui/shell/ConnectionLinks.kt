@@ -94,6 +94,7 @@ internal fun TransportKind.icon(): ImageVector = when (this) {
     TransportKind.WIFI_DIRECT -> DtnIcons.WifiDirect
     TransportKind.HUB -> DtnIcons.LoraHub
     TransportKind.INTERNET -> DtnIcons.Internet
+    TransportKind.WEBRTC -> DtnIcons.Internet
 }
 
 internal fun TransportKind.purpose(): String = when (this) {
@@ -101,6 +102,7 @@ internal fun TransportKind.purpose(): String = when (this) {
     TransportKind.WIFI_DIRECT -> "Faster phone-to-phone groups (Android 10+)"
     TransportKind.HUB -> "Long range over LoRa, through the DTN hubs"
     TransportKind.INTERNET -> "Contacts anywhere, over the MQTT relay (optional)"
+    TransportKind.WEBRTC -> "Direct phone-to-phone WebRTC data channels"
 }
 
 /** Pill text for the status card. */
@@ -130,7 +132,7 @@ internal fun rememberLinkSnapshot(viewModel: DtnViewModel): LinkSnapshot {
     val relay by viewModel.relayStatus.collectAsState()
     val nowMs = rememberRelayClock(relay)
     val linkPeers = linkInfo.mapValues { it.value.peers.size }
-    val chips = TransportKind.entries.map {
+    val chips = listOf(TransportKind.BLE, TransportKind.WIFI_DIRECT, TransportKind.HUB, TransportKind.INTERNET).map {
         transportChip(it, status, radios, relayPeers.size, linkPeers, viewModel.wifiDirectSupported, relay, nowMs)
     }
     return LinkSnapshot(chips, connectionHeadline(chips), status, radios, linkInfo, relay)

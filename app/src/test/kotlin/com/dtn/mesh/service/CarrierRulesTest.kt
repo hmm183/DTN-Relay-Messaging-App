@@ -115,7 +115,8 @@ class CarrierRulesTest {
     @Test
     fun relayHubAndHubOnlyPeers() {
         val m = dm()
-        assertEquals(hold(HoldReason.NO_RELAY_CUSTODY), verdict(m, CarrierRules.Peer(peer, relay = true)))
+        assertEquals(hold(HoldReason.NO_RELAY_CUSTODY), verdict(m, CarrierRules.Peer(peer, relay = true), approved = emptySet()))
+        assertEquals(CarrierRules.Verdict.Send, verdict(m, CarrierRules.Peer(peer, relay = true), approved = setOf(m.id)))
         assertEquals(CarrierRules.Verdict.Send, verdict(dm(to = peer), CarrierRules.Peer(peer, relay = true)))
         assertEquals(hold(HoldReason.NOT_FOR_HUB_PHONE), verdict(m, CarrierRules.Peer(peer, hubOnly = true)))
         val hub = CarrierRules.Peer(peer, isHub = true)
@@ -183,5 +184,34 @@ class CarrierRulesTest {
         assertTrue(store.markDelivered("m1"))
         assertEquals(false, store.markDelivered("m1"))
         assertTrue(store.isDelivered("m1"))
+    }
+
+    @Test
+    fun webRtcPeerAllowsCarryingWithoutRelayRestrictions() {
+        val bundleForThirdParty = dm(to = dest, from = me)
+        // 1. Over relay-only peer: held back because relay-only peers carry no unapproved DMs
+        val relayPeer = CarrierRules.Peer(peer, relay = true)
+        assertEquals(hold(HoldReason.NO_RELAY_CUSTODY), verdict(bundleForThirdParty, relayPeer, approved = emptySet()))
+
+        // 2. Over direct WebRTC peer (relay = false, reachesDirectly = true): strategy approval allows carrying
+        val webRtcPeer = CarrierRules.Peer(peer, relay = false)
+        val facts = Facts(direct = true)
+        assertEquals(CarrierRules.Verdict.Send, verdict(bundleForThirdParty, webRtcPeer, facts, approved = setOf(bundleForThirdParty.id)))
+    }
+
+    @Test
+    fun linkOrderPriority() {
+        // Direct tiers: BLE -> Wi-Fi Direct -> WebRTC -> Hub -> Relay
+        val paths = listOf(
+            com.dtn.mesh.receiver.SendPath.BLE,
+            com.dtn.mesh.receiver.SendPath.WIFI_DIRECT,
+            com.dtn.mesh.receiver.SendPath.WEBRTC,
+            com.dtn.mesh.receiver.SendPath.HUB,
+            com.dtn.mesh.receiver.SendPath.INTERNET,
+        )
+        assertTrue(paths.indexOf(com.dtn.mesh.receiver.SendPath.BLE) < paths.indexOf(com.dtn.mesh.receiver.SendPath.WIFI_DIRECT))
+        assertTrue(paths.indexOf(com.dtn.mesh.receiver.SendPath.WIFI_DIRECT) < paths.indexOf(com.dtn.mesh.receiver.SendPath.WEBRTC))
+        assertTrue(paths.indexOf(com.dtn.mesh.receiver.SendPath.WEBRTC) < paths.indexOf(com.dtn.mesh.receiver.SendPath.HUB))
+        assertTrue(paths.indexOf(com.dtn.mesh.receiver.SendPath.HUB) < paths.indexOf(com.dtn.mesh.receiver.SendPath.INTERNET))
     }
 }

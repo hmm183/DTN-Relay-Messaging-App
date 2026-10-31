@@ -45,6 +45,7 @@ class MultiTransportManager @Inject constructor(
     private val wifiDirectTransport: WifiDirectTransportAdapter,
     private val loRaHubTransport: LoRaHubTransportAdapter,
     private val internetTransport: InternetTransportAdapter,
+    private val webRtcTransport: com.dtn.mesh.receiver.webrtc.WebRtcTransportAdapter,
     private val radios: RadioStatusMonitor,
     private val hubBeaconRegistry: HubBeaconRegistry,
 ) : MeshTransport {
@@ -61,13 +62,14 @@ class MultiTransportManager @Inject constructor(
         listOf(bleTransport, wifiDirectTransport, loRaHubTransport)
 
     /** Every transport whose inbound streams we observe. */
-    private val inboundSources: List<DtnTransport> = radioTransports + internetTransport
+    private val inboundSources: List<DtnTransport> = radioTransports + internetTransport + webRtcTransport
 
     private fun transportFor(kind: TransportKind): DtnTransport = when (kind) {
         TransportKind.BLE -> bleTransport
         TransportKind.WIFI_DIRECT -> wifiDirectTransport
         TransportKind.HUB -> loRaHubTransport
         TransportKind.INTERNET -> internetTransport
+        TransportKind.WEBRTC -> webRtcTransport
     }
 
     // ── Merged Flows ─────────────────────────────────────────────────────
@@ -84,12 +86,24 @@ class MultiTransportManager @Inject constructor(
     private val wanted = MutableStateFlow<Set<TransportKind>>(emptySet())
 
     override val transportStatus: StateFlow<TransportStatus> = combine(
-        bleTransport.connectionState,
-        wifiDirectTransport.connectionState,
-        loRaHubTransport.connectionState,
+        combine(
+            bleTransport.connectionState,
+            wifiDirectTransport.connectionState,
+            webRtcTransport.connectionState,
+            loRaHubTransport.connectionState,
+        ) { b, w, r, h -> listOf(b, w, r, h) },
         internetTransport.connectionState,
         wanted,
-    ) { ble, wfd, hub, inet, want -> TransportStatus(ble, wfd, hub, inet, want) }
+    ) { states, inet, want ->
+        TransportStatus(
+            ble = states[0],
+            wifiDirect = states[1],
+            webrtc = states[2],
+            hub = states[3],
+            internet = inet,
+            wanted = want,
+        )
+    }
         .stateIn(scope, SharingStarted.Eagerly, TransportStatus())
 
     override val connectionState: StateFlow<MeshConnectionState> = transportStatus
@@ -105,6 +119,7 @@ class MultiTransportManager @Inject constructor(
     override val linkReady: Flow<NodeId> = bleTransport.linkReady
 
     /** Wi-Fi Direct groups (no invitations) need Android 10+; older phones show it unavailable. */
+    val workerRelayConnected: StateFlow<Boolean> get() = internetTransport.workerRelay.isConnected
     val wifiDirectSupported: Boolean get() = WifiDirectTransportAdapter.SUPPORTED
 
     private val internetLinkInfo = combine(
@@ -272,7 +287,8 @@ class MultiTransportManager @Inject constructor(
     )
 
     /** Relay Configuration › Test connection: a throwaway client against [url] (off the main thread). */
-    suspend fun testRelay(url: String): RelayTestResult = internetTransport.testConnection(url)
+    suspend fun testRelay(url: String, username: String? = null, password: String? = null): RelayTestResult =
+        internetTransport.testConnection(url, username, password)
 
     /** Fan a broadcast / group / announce bundle out over the relay (no-op when it's down). */
     fun publishBroadcastToInternet(message: DtnMessage) = internetTransport.publishBroadcast(message)
@@ -284,6 +300,7 @@ class MultiTransportManager @Inject constructor(
     override fun directLinks(peer: NodeId): List<SendPath> = buildList {
         if (bleTransport.isConnected && bleTransport.isPeerReachable(peer)) add(SendPath.BLE)
         if (wifiDirectTransport.isConnected && wifiDirectTransport.isPeerReachable(peer)) add(SendPath.WIFI_DIRECT)
+        if (webRtcTransport.isConnected && webRtcTransport.isPeerReachable(peer)) add(SendPath.WEBRTC)
         if (isHub(peer)) add(SendPath.HUB)
     }
 
@@ -292,6 +309,8 @@ class MultiTransportManager @Inject constructor(
     override fun isHubPeer(peer: NodeId): Boolean = loRaHubTransport.isHubPeer(peer)
 
     override fun isRadioReachable(peer: NodeId): Boolean = reachesDirectly(peer) || isHubPeer(peer)
+    override fun isPhysicallyReachable(peer: NodeId): Boolean =
+        directLinks(peer).any { it != SendPath.WEBRTC } || isHubPeer(peer)
 
     override suspend fun sendMessage(message: DtnMessage, targetPeer: NodeId): Int? =
         sendMessageVia(message, targetPeer)?.packetId
@@ -325,6 +344,14 @@ class MultiTransportManager @Inject constructor(
             }
         }
 
+        // WebRTC direct phone-to-phone data channel (direct link, between Wi-Fi Direct and LoRa Hub)
+        if (SendPath.WEBRTC in only && webRtcTransport.isConnected && webRtcTransport.isPeerReachable(targetPeer)) {
+            webRtcTransport.sendMessage(message, targetPeer)?.let {
+                Log.d(TAG, "Sent via WebRTC direct to ${targetPeer.value}")
+                return SendOutcome(it, SendPath.WEBRTC)
+            }
+        }
+
         // 3. LoRa hub — the target is the hub itself.
         if (SendPath.HUB in only && loRaHubTransport.isConnected && loRaHubTransport.isHub(targetPeer)) {
             loRaHubTransport.sendMessage(message, targetPeer)?.let {
@@ -344,7 +371,10 @@ class MultiTransportManager @Inject constructor(
 
         // 5. Internet relay — the target is present on the relay and no local radio reaches it.
         //    Direct, reliable and free of LoRa airtime, so it beats flooding the backbone.
-        if (SendPath.INTERNET in only && internetTransport.isConnected && internetTransport.isPeerOnline(targetPeer)) {
+        if (SendPath.INTERNET in only && internetTransport.anyRelayConnected && internetTransport.isPeerOnline(targetPeer)) {
+            // Opportunistic WebRTC: traffic to a contact over the relay is what opens a direct
+            // session (rate-limited, contacts with keys only, off unless the setting is on).
+            webRtcTransport.maybeConnect(targetPeer)
             internetTransport.sendMessage(message, targetPeer)?.let {
                 Log.d(TAG, "Sent via internet relay to ${targetPeer.value}"); return SendOutcome(it, SendPath.INTERNET)
             }

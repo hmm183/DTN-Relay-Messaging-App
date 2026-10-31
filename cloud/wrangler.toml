@@ -1,0 +1,17 @@
+name = "dtnmesh"
+main = "src/worker.ts"
+compatibility_date = "2025-01-01"
+# Deployed host: https://dtnmesh.<your-account-subdomain>.workers.dev  ->  put it in the app's
+# local.properties as dtn.workerHost (App Links + the relay both use it).
+assets = { directory = "./public", binding = "ASSETS" }
+
+[durable_objects]
+bindings = [
+  { name = "RELAY_ROOM", class_name = "RelayRoom" }
+]
+
+# The Workers Free plan can only create SQLite-backed Durable Objects ("new_classes" is the
+# key-value backend, Paid plan only, and fails to deploy on Free).
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayRoom"]

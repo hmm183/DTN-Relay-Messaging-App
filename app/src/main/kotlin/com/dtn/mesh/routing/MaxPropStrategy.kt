@@ -251,8 +251,13 @@ class MaxPropStrategy(
                     // This peer is the min-cost next hop: priority falls as path cost rises.
                     nextHop == peerId.value -> ForwardCandidate(msg,
                         priority = (1.0 / (1.0 + cost)) * headStart * ttlFraction)
-                    // A cheaper path exists through a different peer — hold for it.
-                    nextHop != null -> null
+                    // A cheaper path exists through a different peer — allow secondary forwarding if this peer has viable reach
+                    nextHop != null -> {
+                        val peerF = peerFTables[peerId.value]?.get(destKey) ?: 0.0
+                        if (nextHop != destKey && peerF > config.exploratoryFloor) {
+                            ForwardCandidate(msg, priority = (peerF / (1.0 + cost)) * ttlFraction)
+                        } else null
+                    }
                     // No known path. Prefer this peer's own reported f(peer,dest); if it has none
                     // either, still allow a BOUNDED low-priority exploratory forward so bundles can
                     // reach freshly-met mules during bootstrap instead of dead-ending (parity with

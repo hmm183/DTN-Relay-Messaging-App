@@ -166,6 +166,13 @@ GATT service `d791b000-2c8f-4f2a-9b1e-000000000001` (Oct 2026 fix 3 added the li
   (`GroupReceiptCodec`); 4 + 16·n ≤ 207 plaintext bytes = one LoRa frame after the 16 B GCM tag.
   Readers drop other versions, channel 0, n = 0 / n > 12 and short bodies, and ignore trailing bytes.
   Older builds show it as garbage text: every phone must run the Oct 2026 (Phase 8) build.
+- Replies (Oct 2026, `ReplyCodec`): the text body (DM: after the algorithm byte; group / broadcast:
+  from byte 0) may start with `[0x00]['R'][idLen 1..64][parent id UTF-8][snipLen][snippet UTF-8]`
+  then the text. Parent id = the chat row id of the quoted message (the same bundle id / canonical
+  fragment parent on every phone). Snippet ≤ 60 code points, one line. No marker, or a malformed
+  header → the whole body is plain text (never dropped). Builds before this show the header bytes as
+  part of the text. Composer text never starts with NUL, and the 0x80–0xBF control check reads the
+  plaintext's first byte (the algorithm byte for DMs), so neither collides.
 
 ## Routing summaries (ROUTING_SUMMARY payload, 1 hop, direct links only)
 - The tag is not on the wire: a payload starting `0xD1 0x01` is DiMaxProp's; anything else is read
@@ -197,6 +204,9 @@ GATT service `d791b000-2c8f-4f2a-9b1e-000000000001` (Oct 2026 fix 3 added the li
 - ANNOUNCE payload v2: `[ver 2][flags][4B node id][32B xPub][32B edPub][4B issuedAt s][1B len][name ≤48]
   [64B Ed25519 sig over everything before it]` (≤ 187 B). Receivers require node id == bundle origin.
   v1 (no node id field; id = key hash) is still accepted.
+  Announce flags (inside the signature): bit0 `FLAG_WANTS_REPLY` (Oct 2026) = "I couldn't decrypt
+  your DM, send me your announce"; other bits 0. Never the bundle header's flags byte (its bits 6-7
+  are the wire version).
 - Key changes: an announce for a known node with other keys replaces them only if its issuedAt is
   newer than the stored keys' (stale replays ignored, not relayed). Unverified contact → switch + a
   "safety number changed" note in its chat. QR-verified contact → keys held for review ("Keys changed —
@@ -207,6 +217,14 @@ GATT service `d791b000-2c8f-4f2a-9b1e-000000000001` (Oct 2026 fix 3 added the li
 - Discover on: ANNOUNCE to `0xFFFFFFFF` (+ relay `bcast`) every 5 min, TTL 10 min, as before.
 - Discover off (default): one ANNOUNCE addressed to each added contact (dest = its node id, TTL
   30 min, at most every 30 min, immediately on QR add / Add / name change; never to blocked contacts).
+  Since Oct 2026 a direct announce is also queued before a DM to a contact when none went to it in
+  the last 60 s, and is published on the relay to the contact's `node/<hex8>` too (it used to stay
+  radio-only, since only broadcast announces were bridged).
+- Undecryptable DM (no keys for the sender yet): not acknowledged; the packet is kept in memory
+  (≤ 20 per sender, ≤ 20 senders, until its TTL) and the receiver sends the sender a direct announce
+  with `FLAG_WANTS_REPLY` (≤ 1 per sender per 2 min). A verified wants-reply announce is answered with
+  a plain direct announce (≤ 1 per peer per 2 min, never flagged, so no ping-pong). When the sender's
+  announce pins (or refreshes / replaces) its keys, the kept DMs are processed again.
   Only the addressee pins the keys; carriers relay it like a DM. Superseded per (origin, destination).
   Dropped from the buffer once handed to its destination (direct, same hub, or relay).
 - Data-clear ghosts: the pre-clear identity has the receiver's own node id, so its announces are dropped
@@ -237,18 +255,65 @@ GATT service `d791b000-2c8f-4f2a-9b1e-000000000001` (Oct 2026 fix 3 added the li
   The public broadcast (channel 0, not encrypted) has no receipts.
 
 ## Phone ⇄ internet relay (MQTT, optional)
-- Topics under `dtn/v1`: `node/<hex8>` (bundles for one node: DMs, receipts, per-peer catch-up),
-  `bcast` (broadcast/group/announce, published once by the origin), `presence/<hex8>` (retained).
-- Payload = `[0xD7][0x01][4B publisher node num BE][wire bytes]` (raw wire also accepted).
+- Topics under `dtn/v1`: `node/<hex8>` (bundles for one node: DMs, receipts, direct announces,
+  per-peer catch-up), `bcast` (broadcast/group/announce, published once by the origin),
+  `presence/<hex8>` (retained), and (Oct 2026) the route queries `query/who_sees/<dest hex8>` and
+  `query/reply/<asker hex8>` (below). Every client subscribes to `query/who_sees/+` and its own reply topic.
+- Payload = `[0xD7][0x01][4B publisher node num BE][wire bytes]` (raw wire also accepted). This is
+  frozen: `InternetFramesTest.wrap_matchesExactGolden6ByteHeader` pins it (a 5-byte variant briefly
+  existed in an uncommitted build and broke old ⇄ new relay traffic).
   The publisher prefix is unauthenticated: never trust it — ROUTING_SUMMARY over the relay is dropped.
-- Presence = retained ASCII `on:<epochSec>` / `off:<epochSec>`; Last Will = `off`; heartbeat 60 s;
+- Presence = retained ASCII `on:<epochSec>` / `off:<epochSec>`, or (Oct 2026) `on:<epochSec>:<b64 name>`
+  (Base64 UTF-8 display name, no padding) **only while Discover is on** — the retained record is
+  public on the broker. Older readers take everything after the first `:` as the timestamp and fail to
+  parse the named form (that peer then just isn't shown online to them): upgrade all phones together.
+  The name is unauthenticated: receivers use it only as a fallback label (`announce_name`) for a
+  contact that already exists, has no pinned keys, and has no custom or mesh name. It never creates
+  a contact; the first signed announce overwrites it. Last Will = `off`; heartbeat 60 s;
   stale after ~3 missed heartbeats; retained `on` older than 10 min is ignored.
   Client id `dtn-<hex8>` (stable, so a reconnect takes over and fires the old will first).
 - A relay DM is published to the destination's node topic only while it is present, and stays
-  buffered until the end-to-end receipt returns (PUBACK ≠ delivery). No custody over the relay.
+  buffered until the end-to-end receipt returns (PUBACK ≠ delivery). A relay publish keeps the chat
+  row Queued (not Sent): the broker stores nothing.
   Besides relay-only destinations, the 5 s fallback publishes a DM whose radio path hasn't delivered
-  it yet (at most every 30 s); a carried DM goes to its own destination only (still no custody), and
-  one for a phone that isn't a contact on the carrier is published by the fallback only.
+  it yet (at most every 30 s); a carried DM goes to its own destination only, and one for a phone that
+  isn't a contact on the carrier is published by the fallback only.
+- Relay custody (multi-hop A → relay → B → radio → C, Oct 2026): a phone that holds DATA DMs for a
+  destination nothing reaches (no radio link, not present on the relay, no fresh carrier) publishes
+  `query/who_sees/<C>` with framed body `Q` (≤ once per destination per 2 min, ≤ 10 per flush). A phone
+  whose radio reaches C right now (BLE / Wi-Fi Direct / its hub) answers on `query/reply/<A>` with framed
+  body `I_SEE:<C hex8>` (≤ once per (asker, C) per 30 s; never to blocked askers). A accepts answers only
+  for destinations it asked about in the last 3 min, and B is then a carrier for C for 3 min: B gets a
+  flush pass even if it isn't A's contact, and the DMs for C are approved for it (`CarrierRules`
+  approved set). This answer is the ONLY way a relay-only peer gets someone else's DM — no routing
+  strategy decides for relay peers (summaries never cross the relay; Epidemic would otherwise copy
+  every DM to every phone on the broker). Answers are unauthenticated: a liar only receives an
+  end-to-end-encrypted copy, and A keeps its own until C's receipt. Queries reveal on the broker which
+  destination a phone is looking for.
+- Second relay (Cloudflare Worker + SQLite Durable Object `RelayRoom`, `cloud/`), used in parallel
+  with MQTT when the build has `dtn.workerHost`: `wss://<host>/relay?node=<hex8>`, one WebSocket.
+  Binary frames `[kind][…]`: 0 node `[8B dest hex][D7 01 num wire]`, 1 bcast `[D7 01 num wire]`,
+  3 route query `[8B dest hex][D7 01 num "Q"]` (to all), 4 route answer `[8B asker hex][D7 01 num
+  "I_SEE:<hex8>"]`, 5 WebRTC signal `[8B dest][8B sender][json]` (reserved; no WebRTC yet). Text
+  frames from the server: `{"type":"roster","nodes":[…]}` on connect, `{"type":"presence",…}`.
+  The Worker overwrites the publisher num / sender hex with the socket's own node id (no spoofing
+  another id on this relay), caps frames at 8 KB and 3 sockets per node id. Node ids are still
+  unauthenticated (same trust model as MQTT topics). Every publish goes to both relays; receivers
+  dedup by bundle id. `internetPeers` = present on either relay, and relay passes / route queries
+  run while either is up (`InternetTransportAdapter.anyRelayConnected`).
+- WebRTC direct (Oct 2026, experimental, setting off by default; `receiver/webrtc/`): signaling
+  on MQTT `dtn/v1/rtc/<hex8>` (raw JSON, no frame prefix; each phone subscribes to its own) and
+  Worker kind 5, sent on both. Outer JSON `{sender, recipient, sessionId, timestamp, ciphertext}`;
+  ciphertext = suite-1 AES-GCM (X25519 identity keys, HKDF salt = sessionId bytes, AAD "RTC-1") of
+  `{type offer|answer, sdp, sessionId, timestamp, sender, recipient, sig}`, sig = Ed25519 over
+  type ‖ sender ‖ recipient ‖ sessionId ‖ ts(8B) ‖ full SDP. Rejected: not an added / unblocked
+  contact with keys, |ts − now| > 120 s, sessionId seen in the last 5 min, any field mismatch. One
+  offer + one answer (no trickle ICE). The DTLS fingerprint inside the signed SDP authenticates the
+  data channel. Data channel `dtn-mesh-data` (ordered) carries raw DTN wire bundles. Glare: polite
+  = lower node id compared UNSIGNED.
+- `GET https://<worker>/turn?node=<hex8>` → `{status, iceServers}`: Metered credentials minted by the
+  Worker (secret key server-side, 4 h, cached per node), only for a node connected to `/relay`,
+  10/min per IP and 5/min per node; public STUN when unconfigured.
 - Default broker `ssl://broker.hivemq.com:8883` (TLS). The client resolves DNS itself and tries
   **every IPv4 address before any IPv6** (many ISPs hand out black-holed IPv6). For the public
   HiveMQ host it rotates TLS 8883 → TCP 1883 → WSS 8884 (`/mqtt`) on each failed attempt; a custom

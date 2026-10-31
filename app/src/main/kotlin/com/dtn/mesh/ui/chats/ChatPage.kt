@@ -72,6 +72,8 @@ import com.dtn.mesh.ui.DeliveryState
 import com.dtn.mesh.ui.DtnViewModel
 import com.dtn.mesh.ui.PeerInfo
 import com.dtn.mesh.ui.groups.GroupInviteDm
+import com.dtn.mesh.ui.chats.ContactCardDm
+import com.dtn.mesh.ui.chats.SharedContactCard
 import com.dtn.mesh.ui.groups.JoinGroupCard
 import com.dtn.mesh.ui.UiText
 import com.dtn.mesh.ui.UserMessageSnackbars
@@ -97,6 +99,7 @@ import kotlinx.coroutines.launch
  * each sent one ("✓✓ Delivered via BLE"), the "safety number changed" notice, and the composer.
  * Tap or long-press a bubble for its simple status sheet. Opening the chat marks it read.
  */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun ChatPage(
     viewModel: DtnViewModel,
@@ -130,6 +133,12 @@ fun ChatPage(
     }
     var statusFor by rememberSaveable { mutableStateOf<String?>(null) }
     var confirmAccept by rememberSaveable { mutableStateOf(false) }
+    var showShareContactSheet by rememberSaveable { mutableStateOf(false) }
+    val currentTheme by viewModel.chatTheme.collectAsState()
+    val wallpaperPath by viewModel.chatWallpaperPath.collectAsState()
+    val wallpaperPhoto = rememberWallpaperPhoto(if (currentTheme == ChatWallpapers.PHOTO) wallpaperPath else null)
+    var replyingTo by remember { mutableStateOf<ChatMessage?>(null) }
+    var showDeleteConfirm by remember { mutableStateOf<ChatMessage?>(null) }
     val snackbars = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
@@ -184,7 +193,7 @@ fun ChatPage(
     }
 
     Scaffold(
-        containerColor = DtnColors.Background,
+        containerColor = ChatWallpapers.baseColor(currentTheme),
         snackbarHost = { SnackbarHost(snackbars) },
         topBar = {
             ChatHeader(
@@ -197,13 +206,17 @@ fun ChatPage(
                 },
                 menu = when {
                     peer != null -> listOf(
+                        MenuAction("Share contact…") { showShareContactSheet = true },
                         MenuAction("Contact info") { onOpenContact(peer.nodeId) },
                         MenuAction("Rename") { actions.rename(peer) },
                         MenuAction("Safety number") { onOpenContact(peer.nodeId) },
                         MenuAction("Delete…", destructive = true) { actions.delete(peer) },
                         MenuAction("Block…", destructive = true) { actions.block(peer) },
                     )
-                    group != null -> listOf(MenuAction("Group info") { onOpenGroup(group.channel) })
+                    group != null -> listOf(
+                        MenuAction("Share contact…") { showShareContactSheet = true },
+                        MenuAction("Group info") { onOpenGroup(group.channel) }
+                    )
                     else -> emptyList()
                 },
             )
@@ -211,7 +224,10 @@ fun ChatPage(
     ) { padding ->
         // consumeWindowInsets: the Scaffold padding already holds the navigation bar, so
         // imePadding must only add what the keyboard covers beyond it (no double gap).
-        Column(modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)
+                .chatWallpaper(currentTheme, wallpaperPhoto).imePadding(),
+        ) {
             if (peer != null && peer.keysChanged) {
                 Banner(
                     text = "Keys changed — scan their QR or Accept. ${peer.displayName()}'s phone announced new keys " +
@@ -236,17 +252,30 @@ fun ChatPage(
                         is ConvRow.Day -> DaySeparator(row.label)
                         is ConvRow.Notice -> KeyChangeNotice(row.atMs, onClick = { onOpenContact(chatKey) })
                         is ConvRow.Bubble -> {
-                            // A group invite sent as a DM shows as a Join group card (never auto-joined).
+                            // A group invite or contact card sent as a DM shows as an interactive card.
                             val invite = if (kind == ChatKind.DIRECT) remember(row.msg.text) { GroupInviteDm.detect(row.msg.text) } else null
-                            val card: (@Composable (Dp) -> Unit)? = invite?.let { inv ->
-                                @Composable { width: Dp ->
+                            val contactCard = remember(row.msg.text) { ContactCardDm.detect(row.msg.text) }
+                            val card: (@Composable (Dp) -> Unit)? = when {
+                                invite != null -> { width: Dp ->
                                     JoinGroupCard(
-                                        viewModel = viewModel, invite = inv, inviteText = row.msg.text,
+                                        viewModel = viewModel, invite = invite, inviteText = row.msg.text,
                                         outgoing = row.msg.isOutgoing, peerName = peer?.displayName() ?: title, maxWidth = width,
                                         onOpenGroupChat = { ch -> viewModel.openChat("grp:$ch") },
                                         onOpenStatus = { statusFor = row.msg.msgId },
                                     )
                                 }
+                                contactCard != null -> { width: Dp ->
+                                    SharedContactCard(
+                                        viewModel = viewModel,
+                                        contact = contactCard,
+                                        outgoing = row.msg.isOutgoing,
+                                        sharedByName = if (row.msg.isOutgoing) "You" else (peer?.displayName() ?: title),
+                                        maxWidth = width,
+                                        onOpenChat = { node -> viewModel.openChat(node) },
+                                        onOpenStatus = { statusFor = row.msg.msgId },
+                                    )
+                                }
+                                else -> null
                             }
                             Bubble(
                                 msg = row.msg,
@@ -255,6 +284,12 @@ fun ChatPage(
                                 continued = row.continued,
                                 onOpenStatus = { statusFor = row.msg.msgId },
                                 card = card,
+                                onScrollToReply = { replyId ->
+                                    val targetIdx = rows.indexOfFirst { it is ConvRow.Bubble && it.msg.msgId == replyId }
+                                    if (targetIdx >= 0) {
+                                        scope.launch { listState.animateScrollToItem(targetIdx) }
+                                    }
+                                },
                             )
                         }
                     }
@@ -269,13 +304,65 @@ fun ChatPage(
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                 )
             }
+            replyingTo?.let { replyMsg ->
+                Surface(
+                    color = DtnColors.Card,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(DtnColors.Track)
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(4.dp)
+                                .height(36.dp)
+                                .background(DtnColors.Primary, RoundedCornerShape(2.dp))
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                if (replyMsg.isOutgoing) "You" else (if (replyMsg.from.isNotBlank()) nameOf(replyMsg.from) else "Contact"),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = DtnColors.Primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                replyMsg.text,
+                                fontSize = 12.sp,
+                                color = DtnColors.TextSubtitle,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        IconButton(
+                            onClick = { replyingTo = null },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(DtnIcons.Close, contentDescription = "Cancel reply", tint = DtnColors.TextSubtitle, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
             if (isGroup && group == null) {
                 Surface(color = DtnColors.Card) {
                     Text("You left this group, so you can't send to it any more. Rejoin with an invite (Groups, top bar).",
                         style = DtnType.RowSubtitle, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(16.dp))
                 }
             } else {
-                Composer(placeholder = placeholder, onSend = { viewModel.sendTestMessage(it) })
+                Composer(
+                    placeholder = placeholder,
+                    onSend = { text ->
+                        viewModel.sendTestMessage(text, replyToId = replyingTo?.msgId, replySnippet = replyingTo?.text?.let { com.dtn.mesh.service.ReplyCodec.snippetOf(it) })
+                        replyingTo = null
+                    }
+                )
             }
         }
     }
@@ -295,7 +382,29 @@ fun ChatPage(
             },
             onFullTrace = { statusFor = null; onOpenMessage(msg.msgId.take(8)) },
             onDismiss = { statusFor = null },
+            onReply = {
+                replyingTo = msg
+                statusFor = null
+            },
+            onDelete = {
+                showDeleteConfirm = msg
+                statusFor = null
+            },
             memberName = { id8 -> memberNames.label(id8) },
+        )
+    }
+    showDeleteConfirm?.let { msg ->
+        ConfirmDialog(
+            title = "Delete for me?",
+            text = "This message will be removed from your chat history on this phone. It will not be deleted from other phones.",
+            confirmLabel = "Delete for me",
+            destructive = true,
+            onConfirm = {
+                viewModel.deleteMessage(msg.msgId)
+                showDeleteConfirm = null
+                scope.launch { snackbars.showSnackbar("Message deleted") }
+            },
+            onDismiss = { showDeleteConfirm = null },
         )
     }
     if (confirmAccept && peer != null) {
@@ -307,6 +416,54 @@ fun ChatPage(
             onConfirm = { confirmAccept = false; viewModel.acceptNewKeys(peer.nodeId) },
             onDismiss = { confirmAccept = false },
         )
+    }
+
+    if (showShareContactSheet) {
+        val allPeers by viewModel.peers.collectAsState()
+        val addedContacts = remember(allPeers) { allPeers.filter { it.added && it.xPub != null } }
+        androidx.compose.material3.ModalBottomSheet(
+            onDismissRequest = { showShareContactSheet = false },
+            containerColor = DtnColors.Background,
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Share a contact", style = DtnType.RowTitle)
+                Spacer(Modifier.height(8.dp))
+                if (addedContacts.isEmpty()) {
+                    Text("No contacts with verified keys to share.", style = DtnType.Meta)
+                } else {
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 350.dp)
+                    ) {
+                        items(addedContacts, key = { it.nodeId }) { c ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        showShareContactSheet = false
+                                        val card = viewModel.buildContactCardString(c)
+                                        if (card != null) viewModel.sendTestMessage(card)
+                                    }
+                                    .padding(vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                androidx.compose.foundation.layout.Box(
+                                    modifier = Modifier.size(36.dp).background(DtnColors.PrimarySoft, androidx.compose.foundation.shape.CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(c.displayName().firstOrNull()?.uppercase() ?: "#", color = DtnColors.Primary, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text(c.displayName(), style = DtnType.RowTitle)
+                                    Text("${c.displayName()}#${c.nodeId.takeLast(4).lowercase()}", style = DtnType.Meta)
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+        }
     }
 }
 
@@ -499,6 +656,7 @@ private fun Bubble(
     onOpenStatus: () -> Unit,
     /** Replaces the text bubble (a Join group card); gets the bubble's max width. */
     card: (@Composable (Dp) -> Unit)? = null,
+    onScrollToReply: ((String) -> Unit)? = null,
 ) {
     val out = msg.isOutgoing
     val shape = if (out) RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
@@ -524,8 +682,37 @@ private fun Bubble(
                     },
                 ),
             ) {
-                Text(msg.text, fontSize = 15.sp, lineHeight = 20.sp, color = if (out) Color.White else DtnColors.TextTitle,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp))
+                Column(Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
+                    if (msg.replyToId != null && !msg.replySnippet.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (out) Color.White.copy(alpha = 0.2f) else DtnColors.Card,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 6.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onScrollToReply?.invoke(msg.replyToId) }
+                        ) {
+                            Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    Modifier
+                                        .width(3.dp)
+                                        .height(24.dp)
+                                        .background(if (out) Color.White else DtnColors.Primary, RoundedCornerShape(1.5.dp))
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    msg.replySnippet,
+                                    fontSize = 12.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = if (out) Color.White.copy(alpha = 0.9f) else DtnColors.TextSubtitle,
+                                )
+                            }
+                        }
+                    }
+                    Text(msg.text, fontSize = 15.sp, lineHeight = 20.sp, color = if (out) Color.White else DtnColors.TextTitle)
+                }
             }
             Row(Modifier.padding(horizontal = 6.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(msg.time, fontSize = 11.sp, color = DtnColors.TextHint)
@@ -604,3 +791,4 @@ private fun Composer(placeholder: String, onSend: (String) -> Unit) {
         }
     }
 }
+

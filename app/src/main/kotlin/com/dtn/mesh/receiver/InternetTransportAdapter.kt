@@ -5,6 +5,7 @@ import com.dtn.mesh.crypto.DtnIdentity
 import com.dtn.mesh.model.DtnMessage
 import com.dtn.mesh.model.DtnMessageType
 import com.dtn.mesh.model.NodeId
+import com.dtn.mesh.database.dao.ContactDao
 import com.dtn.mesh.settings.SettingsRepository
 import com.hivemq.client.mqtt.MqttClient
 import com.hivemq.client.mqtt.MqttClientTransportConfig
@@ -27,6 +28,7 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -93,6 +95,9 @@ class InternetTransportAdapter @Inject constructor(
     /** The app-wide diagnostics log (not [diagnostics], this relay's one-line status). */
     private val diagLog: com.dtn.mesh.service.DiagnosticsLog,
     private val radios: RadioStatusMonitor,
+    private val contactDao: ContactDao,
+    private val wakeLocks: com.dtn.mesh.service.WakeLocks,
+    val workerRelay: com.dtn.mesh.receiver.worker.WorkerRelayClient,
 ) : DtnTransport {
 
     private fun diagInfo(text: String) = diagLog.i(com.dtn.mesh.service.DiagSource.RELAY, text)
@@ -171,13 +176,23 @@ class InternetTransportAdapter @Inject constructor(
     private val _onlinePeers = MutableStateFlow<Set<String>>(emptySet())
 
     /** Node ids ("!hex") currently present on the relay (excluding ourselves). */
-    val onlinePeers: StateFlow<Set<String>> = _onlinePeers.asStateFlow()
+    val onlinePeers: StateFlow<Set<String>> = kotlinx.coroutines.flow.combine(_onlinePeers, workerRelay.onlinePeers) { mqtt, worker ->
+        // Present on EITHER relay: with HiveMQ down the Cloudflare relay alone keeps peers online,
+        // so the orchestrator still runs relay passes for them (it only ever sends to these).
+        (mqtt + worker) - identity.nodeId.value
+    }.stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptySet())
 
-    fun isPeerOnline(peer: NodeId): Boolean = peer.value in _onlinePeers.value
+    /** At least one relay backend (HiveMQ or the Cloudflare Worker) is up. [isConnected] is HiveMQ only. */
+    val anyRelayConnected: Boolean get() = isConnected || workerRelay.isConnected.value
+
+    fun isPeerOnline(peer: NodeId): Boolean = peer.value in _onlinePeers.value || peer.value in workerRelay.onlinePeers.value
 
     private fun hex(num: Int): String = String.format("%08x", num)
     private fun nodeTopic(num: Int) = "$TOPIC_ROOT/node/${hex(num)}"
     private fun presenceTopic(num: Int) = "$PRESENCE_PREFIX${hex(num)}"
+    private fun replyTopic(num: Int) = "$REPLY_PREFIX${hex(num)}"
+    private val RTC_PREFIX = "$TOPIC_ROOT/rtc/"
+    private fun rtcTopic(num: Int) = "$RTC_PREFIX${hex(num)}"
     private fun nowSec() = System.currentTimeMillis() / 1000L
     private fun now() = System.currentTimeMillis()
 
@@ -185,6 +200,37 @@ class InternetTransportAdapter @Inject constructor(
         c != null && runCatching { c.state.isConnected }.getOrDefault(false)
 
     init {
+        workerRelay.onRouteQuery = { askerNum, destHex ->
+            val asker = NodeId.fromNodeNum(askerNum)
+            if (asker != identity.nodeId && isNodeHex(destHex)) _routeQueries.tryEmit(RouteQuery(asker, NodeId("!$destHex")))
+        }
+        workerRelay.onWebRtcSignal = { _, json -> onWebRtcSignal?.invoke(json) }
+        workerRelay.onRouteReply = { carrierNum, body ->
+            val carrier = NodeId.fromNodeNum(carrierNum)
+            val text = String(body, Charsets.US_ASCII)
+            val destHex = text.removePrefix(I_SEE).lowercase()
+            if (carrier != identity.nodeId && text.startsWith(I_SEE) && isNodeHex(destHex)) {
+                _routeReplies.tryEmit(RouteReply(carrier, NodeId("!$destHex")))
+            }
+        }
+        workerRelay.onFrameReceived = { wireBytes, publisherNum ->
+            val msg = DtnWireCodec.decode(wireBytes, rssi = 0, snr = 0f)
+            if (msg != null) {
+                val publisher = publisherNum?.let { NodeId.fromNodeNum(it) }
+                if (publisher != identity.nodeId && (publisher != null || msg.originNodeId != identity.nodeId)) {
+                    if (msg.messageType != DtnMessageType.ROUTING_SUMMARY) {
+                        _inboundMessages.tryEmit(
+                            InboundPacket(
+                                message = msg,
+                                channel = msg.channel,
+                                viaPeer = publisher,
+                                transport = TransportKind.INTERNET
+                            )
+                        )
+                    }
+                }
+            }
+        }
         // The default network: "Waiting for internet" without one, a fresh run when it returns or
         // changes (mobile data → Wi-Fi). The hub's SoftAP is never the default network.
         scope.launch {
@@ -199,6 +245,7 @@ class InternetTransportAdapter @Inject constructor(
     /** Start the relay. Returns at once; [status] follows what actually happens. */
     override suspend fun connect(): Boolean {
         wanted = true
+        workerRelay.start()
         post {
             act(machine.start(now()))
             startTicker()
@@ -209,6 +256,7 @@ class InternetTransportAdapter @Inject constructor(
     /** Stop the relay. Returns at once; the goodbye + DISCONNECT happen in the background. */
     override fun disconnect() {
         wanted = false
+        workerRelay.stop()
         post { act(machine.stop()) }
     }
 
@@ -280,6 +328,8 @@ class InternetTransportAdapter @Inject constructor(
         abortAttempt()
         val at = Attempt(a.attemptId)
         attempt = at
+        // Screen off: don't let the CPU sleep in the middle of the attempt (bounded by its budget).
+        wakeLocks.hold(ATTEMPT_BUDGET_MS)
         at.job = scope.launch { runAttempt(at, a.endpointIndex, a.resolve) }
     }
 
@@ -292,9 +342,11 @@ class InternetTransportAdapter @Inject constructor(
         fun left() = (startedMs + ATTEMPT_BUDGET_MS - now()).coerceAtLeast(1L)
         // Let a previous session say goodbye before taking over its client id (bounded).
         withTimeoutOrNull(TEARDOWN_WAIT_MS) { teardownJob?.join() }
+        val username = runCatching { settings.brokerUsernameOnce() }.getOrDefault("")
+        val password = runCatching { settings.brokerPasswordOnce() }.getOrDefault("")
         if (resolve || candidates.isEmpty()) {
             val url = runCatching { settings.brokerUrlOnce() }.getOrDefault(SettingsRepository.DEFAULT_BROKER)
-            val specs = RelayEndpoints.specsFor(url)
+            val specs = RelayEndpoints.specsFor(url, hasAuth = username.isNotBlank())
             // getAllByName can't be interrupted: look it up beside us and stop waiting after DNS_TIMEOUT_MS.
             val lookup = scope.async {
                 RelayEndpoints.candidates(specs) { host -> InetAddress.getAllByName(host).toList() }
@@ -325,7 +377,7 @@ class InternetTransportAdapter @Inject constructor(
         class Done(val error: Throwable?)
         val done = CompletableDeferred<Done>()
         try {
-            client.connectWith()
+            var connBuilder = client.connectWith()
                 .cleanStart(true)
                 .keepAlive(KEEP_ALIVE_S)
                 .willPublish()
@@ -334,7 +386,13 @@ class InternetTransportAdapter @Inject constructor(
                 .qos(MqttQos.AT_LEAST_ONCE)
                 .retain(true)
                 .applyWillPublish()
-                .send()
+            if (username.isNotBlank()) {
+                connBuilder = connBuilder.simpleAuth()
+                    .username(username)
+                    .password(password.toByteArray(Charsets.UTF_8))
+                    .applySimpleAuth()
+            }
+            connBuilder.send()
                 .whenComplete { _, error ->
                     done.complete(Done(error))
                     // Connected after we stopped waiting: this client must not hold our id.
@@ -464,7 +522,8 @@ class InternetTransportAdapter @Inject constructor(
     private fun onSessionUp(c: Mqtt5AsyncClient) {
         // cleanStart=true → every connect is a fresh broker session: subscribe again each time.
         // (Same filters, so the broker replaces rather than duplicates the subscriptions.)
-        for (filter in listOf(nodeTopic(identity.nodeNum32), BCAST_TOPIC, "$PRESENCE_PREFIX+")) {
+        for (filter in listOf(nodeTopic(identity.nodeNum32), BCAST_TOPIC, "$PRESENCE_PREFIX+",
+            "$WHO_SEES_PREFIX+", replyTopic(identity.nodeNum32), rtcTopic(identity.nodeNum32))) {
             runCatching {
                 c.subscribeWith().topicFilter(filter).qos(MqttQos.AT_LEAST_ONCE).send()
                     .whenComplete { _, ex -> if (ex != null) Log.w(TAG, "subscribe $filter failed", ex) }
@@ -481,10 +540,12 @@ class InternetTransportAdapter @Inject constructor(
      * the public broker's TLS 8883 → TCP 1883 → WebSocket 8884), at most [TEST_MAX_TRIES] of them.
      * Runs on the IO dispatcher (DNS + sockets), never on the caller's thread.
      */
-    suspend fun testConnection(url: String): RelayTestResult = withContext(Dispatchers.IO) {
+    suspend fun testConnection(url: String, username: String? = null, password: String? = null): RelayTestResult = withContext(Dispatchers.IO) {
         val started = System.currentTimeMillis()
+        val testUser = username ?: runCatching { settings.brokerUsernameOnce() }.getOrDefault("")
+        val testPass = password ?: runCatching { settings.brokerPasswordOnce() }.getOrDefault("")
         val list = runCatching {
-            RelayEndpoints.candidates(RelayEndpoints.specsFor(url)) { host -> InetAddress.getAllByName(host).toList() }
+            RelayEndpoints.candidates(RelayEndpoints.specsFor(url, hasAuth = testUser.isNotBlank())) { host -> InetAddress.getAllByName(host).toList() }
         }.getOrDefault(emptyList())
         if (list.isEmpty()) return@withContext RelayTestResult(false, "—", 0L, "No broker address")
         var lastReason = "not tried"
@@ -498,7 +559,14 @@ class InternetTransportAdapter @Inject constructor(
                     .identifier("dtn-test-" + java.util.UUID.randomUUID().toString().take(8))
                     .transportConfig(transportFor(c))
                     .buildAsync()
-                val connecting = probe.connectWith().cleanStart(true).keepAlive(KEEP_ALIVE_S).send()
+                var probeConn = probe.connectWith().cleanStart(true).keepAlive(KEEP_ALIVE_S)
+                if (testUser.isNotBlank()) {
+                    probeConn = probeConn.simpleAuth()
+                        .username(testUser)
+                        .password(testPass.toByteArray(Charsets.UTF_8))
+                        .applySimpleAuth()
+                }
+                val connecting = probeConn.send()
                 // Closed as soon as it connects, also when we stopped waiting (timeout, page closed):
                 // a probe never stays connected.
                 connecting.whenComplete { _, error -> if (error == null) runCatching { probe.disconnect() } }
@@ -549,6 +617,9 @@ class InternetTransportAdapter @Inject constructor(
                 }
                 is Mqtt5ConnAckException -> {
                     val m = e.mqttMessage
+                    if (m.reasonCode == Mqtt5ConnAckReasonCode.BAD_USER_NAME_OR_PASSWORD || m.reasonCode == Mqtt5ConnAckReasonCode.NOT_AUTHORIZED) {
+                        return "Wrong username or password"
+                    }
                     return "Server refused the connection: " + m.reasonCode.name.lowercase().replace('_', ' ') +
                         " (0x%02X)".format(m.reasonCode.code)
                 }
@@ -586,6 +657,7 @@ class InternetTransportAdapter @Inject constructor(
     private suspend fun publishBounded(c: Mqtt5AsyncClient, topic: String, payload: ByteArray, retain: Boolean = false): Boolean =
         withTimeoutOrNull(PUBLISH_WAIT_MS) {
             if (!clientConnected(c)) return@withTimeoutOrNull false
+            wakeLocks.hold(PUBLISH_WAIT_MS) // until the PUBACK (or the timeout)
             val future = runInterruptible(publishDispatcher) {
                 c.publishWith().topic(topic).qos(MqttQos.AT_LEAST_ONCE).retain(retain).payload(payload).send()
             }
@@ -594,7 +666,12 @@ class InternetTransportAdapter @Inject constructor(
 
     private fun publishPresenceAsync(c: Mqtt5AsyncClient) {
         scope.launch {
-            if (publishBounded(c, presenceTopic(identity.nodeNum32), Presence.encode(true, nowSec()), retain = true)) {
+            // The retained presence record is public on the broker: only advertise our name
+            // while Discover is on. Contacts get it from the signed direct announce otherwise.
+            val name = if (runCatching { settings.discoverableOnce() }.getOrDefault(false)) {
+                runCatching { settings.displayNameOnce() }.getOrDefault("")
+            } else null
+            if (publishBounded(c, presenceTopic(identity.nodeNum32), Presence.encode(true, nowSec(), name), retain = true)) {
                 presenceTimeouts.set(0)
                 return@launch
             }
@@ -651,7 +728,13 @@ class InternetTransportAdapter @Inject constructor(
         runCatching {
             val topic = pub.topic.toString()
             val bytes = pub.payloadAsBytes
-            if (topic.startsWith(PRESENCE_PREFIX)) onPresence(topic, bytes, retained = pub.isRetain) else onBundle(bytes)
+            when {
+                topic.startsWith(PRESENCE_PREFIX) -> onPresence(topic, bytes, retained = pub.isRetain)
+                topic.startsWith(WHO_SEES_PREFIX) -> onRouteQuery(topic, bytes)
+                topic.startsWith(REPLY_PREFIX) -> onRouteReply(bytes)
+                topic.startsWith(RTC_PREFIX) -> onRtcSignal(bytes)
+                else -> onBundle(bytes)
+            }
         }.onFailure { Log.w(TAG, "bad relay message dropped", it) }
     }
 
@@ -662,7 +745,22 @@ class InternetTransportAdapter @Inject constructor(
         val status = Presence.decode(payload) ?: return
         val heard = Presence.heardAtMs(status, retained, System.currentTimeMillis(), PRESENCE_STALE_MS, CLOCK_SKEW_MS)
         val was = node in _onlinePeers.value
-        if (heard != null) presenceHeard.merge(node, heard, ::maxOf) else presenceHeard.remove(node)
+        if (heard != null) {
+            presenceHeard.merge(node, heard, ::maxOf)
+            // Presence is unauthenticated: its name is only a fallback label for a contact we
+            // already know but never got a signed announce from. It never creates a contact and
+            // never overrides a custom or announced name.
+            val presenceName = status.name?.trim()?.take(MAX_PRESENCE_NAME)
+            if (!presenceName.isNullOrBlank()) {
+                scope.launch {
+                    // Into announce_name, never long_name: displayName() ranks long_name above
+                    // announce_name, so a presence name there would hide the signed one forever.
+                    runCatching { contactDao.setPresenceNameIfUnverified(node, presenceName) }
+                }
+            }
+        } else {
+            presenceHeard.remove(node)
+        }
         emitPresence()
         val now = node in _onlinePeers.value
         if (was != now) {
@@ -670,6 +768,96 @@ class InternetTransportAdapter @Inject constructor(
                 "(${if (status.online) "on" else "off"}${if (retained) ", retained" else ""}, sent ${nowSec() - status.epochSec}s ago)")
             diagLog.i(com.dtn.mesh.service.DiagSource.PRESENCE, "Relay: ${node.takeLast(8)} ${if (now) "online" else "offline"} " +
                 "(${if (status.online) "on" else "off"}${if (retained) ", retained" else ""}, sent ${nowSec() - status.epochSec} s ago)")
+        }
+    }
+
+    // ── Route queries (multi-hop relay custody) ─────────────────────────────
+    //
+    // A phone holding a DM for a destination it can't reach asks the relay "who sees <dest> over
+    // radio?". A phone that has <dest> as a BLE / Wi-Fi Direct / hub neighbour answers to the
+    // asker's reply topic, and the asker may then hand that phone a copy (A → relay → B → radio → C).
+    // Like the frame prefix, the publisher here is NOT authenticated: an answer only makes a phone
+    // eligible as a carrier of an end-to-end encrypted bundle, and the sender keeps its own copy
+    // until the destination's receipt comes back, so a false answer can't read or lose a message.
+
+    /** Someone asked who sees a node: (asker, destination). */
+    data class RouteQuery(val asker: NodeId, val dest: NodeId)
+    /** A phone said it sees a node over radio: (carrier, destination). */
+    data class RouteReply(val carrier: NodeId, val dest: NodeId)
+
+    private val _routeQueries = MutableSharedFlow<RouteQuery>(extraBufferCapacity = 32)
+    val routeQueries: kotlinx.coroutines.flow.SharedFlow<RouteQuery> = _routeQueries
+    private val _routeReplies = MutableSharedFlow<RouteReply>(extraBufferCapacity = 32)
+    val routeReplies: kotlinx.coroutines.flow.SharedFlow<RouteReply> = _routeReplies
+
+    private fun onRouteQuery(topic: String, payload: ByteArray) {
+        val destHex = topic.removePrefix(WHO_SEES_PREFIX).lowercase()
+        if (!isNodeHex(destHex)) return
+        val framed = InternetFrames.unwrap(payload)
+        val asker = framed.publisherNum?.let { NodeId.fromNodeNum(it) } ?: return
+        if (asker == identity.nodeId) return // our own query echoed back
+        if (String(framed.wire, Charsets.US_ASCII) != ROUTE_QUERY_BODY) return
+        _routeQueries.tryEmit(RouteQuery(asker, NodeId("!$destHex")))
+    }
+
+    var onWebRtcSignal: ((signalJson: String) -> Unit)? = null
+
+    private fun onRtcSignal(payload: ByteArray) {
+        val json = String(payload, Charsets.UTF_8)
+        onWebRtcSignal?.invoke(json)
+    }
+
+    fun sendWebRtcSignal(targetPeer: NodeId, signalJson: String): Boolean {
+        var sentWorker = false
+        if (workerRelay.isConnected.value) {
+            sentWorker = workerRelay.sendWebRtcSignal(targetPeer, signalJson)
+        }
+        val c = session
+        var sentMqtt = false
+        if (isConnected && clientConnected(c)) {
+            scope.launch {
+                publishBounded(c!!, rtcTopic(targetPeer.toNodeNum32()), signalJson.toByteArray(Charsets.UTF_8))
+            }
+            sentMqtt = true
+        }
+        return sentMqtt || sentWorker
+    }
+
+    private fun onRouteReply(payload: ByteArray) {
+        val framed = InternetFrames.unwrap(payload)
+        val carrier = framed.publisherNum?.let { NodeId.fromNodeNum(it) } ?: return
+        if (carrier == identity.nodeId) return
+        val body = String(framed.wire, Charsets.US_ASCII)
+        if (!body.startsWith(I_SEE)) return
+        val destHex = body.removePrefix(I_SEE).lowercase()
+        if (!isNodeHex(destHex)) return
+        _routeReplies.tryEmit(RouteReply(carrier, NodeId("!$destHex")))
+    }
+
+    private fun isNodeHex(s: String) = s.length == 8 && s.all { it in '0'..'9' || it in 'a'..'f' }
+
+    /** Ask every relay phone whether it sees [dest] over radio. No-op while disconnected. */
+    fun publishWhoSees(dest: NodeId) {
+        val destHex = hex(dest.toNodeNum32())
+        workerRelay.sendTargeted(com.dtn.mesh.receiver.worker.WorkerRelayClient.KIND_ROUTE_QUERY, destHex,
+            ROUTE_QUERY_BODY.toByteArray(Charsets.US_ASCII))
+        val c = session ?: return
+        if (!isConnected) return
+        scope.launch {
+            val payload = InternetFrames.wrap(identity.nodeNum32, ROUTE_QUERY_BODY.toByteArray(Charsets.US_ASCII))
+            publishBounded(c, "$WHO_SEES_PREFIX$destHex", payload)
+        }
+    }
+
+    /** Tell [asker] that this phone sees [dest] over radio. */
+    fun publishISee(asker: NodeId, dest: NodeId) {
+        workerRelay.sendTargeted(com.dtn.mesh.receiver.worker.WorkerRelayClient.KIND_ROUTE_REPLY, hex(asker.toNodeNum32()),
+            "$I_SEE${hex(dest.toNodeNum32())}".toByteArray(Charsets.US_ASCII))
+        val c = session ?: return
+        if (!isConnected) return
+        scope.launch {
+            val body = "$I_SEE${hex(dest.toNodeNum32())}".toByteArray(Charsets.US_ASCII)
+            publishBounded(c, replyTopic(asker.toNodeNum32()), InternetFrames.wrap(identity.nodeNum32, body))
         }
     }
 
@@ -696,21 +884,28 @@ class InternetTransportAdapter @Inject constructor(
      * receipt before treating a DM as delivered.
      */
     override suspend fun sendMessage(message: DtnMessage, targetPeer: NodeId): Int? {
-        val c = session ?: return null
-        if (!isConnected || !clientConnected(c)) return null
-        return try {
-            val payload = InternetFrames.wrap(identity.nodeNum32, DtnWireCodec.encode(message))
-            if (!publishBounded(c, nodeTopic(targetPeer.toNodeNum32()), payload)) {
-                Log.w(TAG, "relay publish to ${targetPeer.value.takeLast(8)} not acknowledged")
-                diagWarn("Publish to ${targetPeer.value.takeLast(8)} timed out (no PUBACK, ${payload.size} B)")
-                null
-            } else {
-                packetIds.incrementAndGet().also {
-                    _deliveryStatus.tryEmit(DeliveryStatusEvent(meshPacketId = it, status = DeliveryOutcome.DELIVERED))
-                }
+        val wire = DtnWireCodec.encode(message)
+        val sentWorker = if (workerRelay.isConnected.value) {
+            workerRelay.sendDirect(targetPeer, wire)
+        } else false
+
+        val c = session
+        val sentMqtt = if (isConnected && clientConnected(c)) {
+            try {
+                val payload = InternetFrames.wrap(identity.nodeNum32, wire)
+                publishBounded(c!!, nodeTopic(targetPeer.toNodeNum32()), payload)
+            } catch (e: Exception) {
+                Log.w(TAG, "relay publish failed", e)
+                false
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "relay publish failed", e)
+        } else false
+
+        return if (sentMqtt || sentWorker) {
+            packetIds.incrementAndGet().also {
+                _deliveryStatus.tryEmit(DeliveryStatusEvent(meshPacketId = it, status = DeliveryOutcome.DELIVERED))
+            }
+        } else {
+            Log.w(TAG, "relay publish to ${targetPeer.value.takeLast(8)} failed on both relays")
             null
         }
     }
@@ -720,10 +915,16 @@ class InternetTransportAdapter @Inject constructor(
      * [onPublished] runs (off the main thread) once the broker acknowledged it.
      */
     fun publishBroadcast(message: DtnMessage, onPublished: (() -> Unit)? = null) {
-        val c = session ?: return
-        if (!isConnected) return
+        val wire = DtnWireCodec.encode(message)
+        val viaWorker = workerRelay.isConnected.value && workerRelay.sendBroadcast(wire)
+        val c = session
+        if (c == null || !isConnected) {
+            // HiveMQ down: the Cloudflare relay alone carried it (the journal still records the publish).
+            if (viaWorker) scope.launch { onPublished?.invoke() }
+            return
+        }
         scope.launch {
-            val payload = runCatching { InternetFrames.wrap(identity.nodeNum32, DtnWireCodec.encode(message)) }.getOrNull()
+            val payload = runCatching { InternetFrames.wrap(identity.nodeNum32, wire) }.getOrNull()
                 ?: return@launch
             if (publishBounded(c, BCAST_TOPIC, payload)) onPublished?.invoke()
             else {
@@ -738,6 +939,12 @@ class InternetTransportAdapter @Inject constructor(
         private const val TOPIC_ROOT = "dtn/v1"
         private const val BCAST_TOPIC = "$TOPIC_ROOT/bcast"
         private const val PRESENCE_PREFIX = "$TOPIC_ROOT/presence/"
+        /** Route query: "who sees <dest hex> over radio?" (payload: framed, body [ROUTE_QUERY_BODY]). */
+        private const val WHO_SEES_PREFIX = "$TOPIC_ROOT/query/who_sees/"
+        /** Route answers to the asker's own topic (payload: framed, body "I_SEE:<dest hex>"). */
+        private const val REPLY_PREFIX = "$TOPIC_ROOT/query/reply/"
+        private const val ROUTE_QUERY_BODY = "Q"
+        private const val I_SEE = "I_SEE:"
         private const val KEEP_ALIVE_S = 30
         private const val SOCKET_CONNECT_TIMEOUT_S = 7L
         private const val MQTT_CONNECT_TIMEOUT_S = 10L
@@ -767,6 +974,8 @@ class InternetTransportAdapter @Inject constructor(
          * make it look online to everyone who (re)subscribes for the next ten minutes.
          */
         private const val PRESENCE_STALE_MS = 2 * HEARTBEAT_MS + 30_000L
+        /** Longest display name accepted from an (unauthenticated) presence record. */
+        private const val MAX_PRESENCE_NAME = 40
         /** Presence timestamps this far ahead of our clock are drift; further ahead is bogus. */
         private const val CLOCK_SKEW_MS = 5 * 60_000L
         /** CONNACK refusals another try can't fix. */

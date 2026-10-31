@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -22,22 +23,29 @@ private val Context.dataStore by preferencesDataStore(name = "dtn_settings")
 
 /**
  * User settings backed by Jetpack DataStore: display name (shown in announces), the optional
- * internet-relay transport (off by default), and the MQTT broker URL. It also keeps the small
- * per-contact state that needs no database column: blocked contacts, deleted-at times, per-chat
- * last-read times, and the key-change state of decision 14.
+ * internet-relay transport (off by default), the MQTT broker URL, persisted routing algorithm,
+ * chat theme, and per-contact state.
  */
 @Singleton
 class SettingsRepository @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val keyVault: com.dtn.mesh.crypto.KeyVault,
 ) {
     private val store = context.dataStore
 
     val displayName: Flow<String> = store.data.map { it[KEY_NAME] ?: "" }
     val internetEnabled: Flow<Boolean> = store.data.map { it[KEY_INET] ?: false }
+    val internetDirectEnabled: Flow<Boolean> = store.data.map { it[KEY_INTERNET_DIRECT] ?: false }
     val brokerUrl: Flow<String> = store.data.map { it[KEY_BROKER] ?: DEFAULT_BROKER }
 
     /** Discover mode: broadcast our name + keys to everyone (off: only to added contacts). */
     val discoverable: Flow<Boolean> = store.data.map { it[KEY_DISCOVER] ?: false }
+
+    /** Selected routing algorithm name (defaults to EPIDEMIC). */
+    val routingAlgorithm: Flow<String> = store.data.map { it[KEY_ALGO] ?: DEFAULT_ALGORITHM }
+
+    /** Selected chat wallpaper/theme. */
+    val chatTheme: Flow<String> = store.data.map { it[KEY_THEME] ?: DEFAULT_THEME }
 
     /** DiMaxProp λ (distance weight) and Q-learning η (progress-reward scale), 0..1. */
     val diMaxPropLambda: Flow<Double> = store.data.map { (it[KEY_LAMBDA] ?: DEFAULT_LAMBDA.toFloat()).toDouble() }
@@ -45,13 +53,112 @@ class SettingsRepository @Inject constructor(
 
     suspend fun displayNameOnce(): String = displayName.first()
     suspend fun internetEnabledOnce(): Boolean = internetEnabled.first()
+    suspend fun internetDirectEnabledOnce(): Boolean = internetDirectEnabled.first()
     suspend fun brokerUrlOnce(): String = brokerUrl.first()
     suspend fun discoverableOnce(): Boolean = discoverable.first()
+    suspend fun routingAlgorithmOnce(): String = routingAlgorithm.first()
+    suspend fun chatThemeOnce(): String = chatTheme.first()
 
     suspend fun setDisplayName(name: String) { store.edit { it[KEY_NAME] = name } }
     suspend fun setInternetEnabled(enabled: Boolean) { store.edit { it[KEY_INET] = enabled } }
+    suspend fun setInternetDirectEnabled(enabled: Boolean) { store.edit { it[KEY_INTERNET_DIRECT] = enabled } }
     suspend fun setBrokerUrl(url: String) { store.edit { it[KEY_BROKER] = url } }
     suspend fun setDiscoverable(on: Boolean) { store.edit { it[KEY_DISCOVER] = on } }
+    suspend fun setRoutingAlgorithm(name: String) { store.edit { it[KEY_ALGO] = name } }
+    suspend fun setChatTheme(theme: String) { store.edit { it[KEY_THEME] = theme } }
+    /** Absolute path of the app-private copy of the gallery photo used as chat wallpaper. */
+    val chatWallpaperPath: Flow<String?> = store.data.map { it[KEY_WALLPAPER_PATH] }
+    suspend fun chatWallpaperPathOnce(): String? = chatWallpaperPath.first()
+    /** Set the photo wallpaper (and select it) in one edit. */
+    suspend fun setChatWallpaperPhoto(path: String) {
+        store.edit { it[KEY_WALLPAPER_PATH] = path; it[KEY_THEME] = THEME_PHOTO }
+    }
+
+    val brokerUsername: Flow<String> = store.data.map { it[KEY_BROKER_USER] ?: "" }
+    suspend fun brokerUsernameOnce(): String = brokerUsername.first()
+    suspend fun setBrokerUsername(username: String) { store.edit { it[KEY_BROKER_USER] = username.trim() } }
+
+    val brokerPasswordEnc: Flow<String> = store.data.map { it[KEY_BROKER_PASS_ENC] ?: "" }
+    suspend fun brokerPasswordOnce(): String {
+        val enc = brokerPasswordEnc.first()
+        if (enc.isBlank()) return ""
+        return runCatching {
+            val bytes = java.util.Base64.getDecoder().decode(enc)
+            String(keyVault.unwrap(bytes), Charsets.UTF_8)
+        }.getOrDefault("")
+    }
+    suspend fun setBrokerPassword(password: String) {
+        if (password.isBlank()) {
+            store.edit { it.remove(KEY_BROKER_PASS_ENC) }
+        } else {
+            val wrapped = keyVault.wrap(password.toByteArray(Charsets.UTF_8))
+            val enc = java.util.Base64.getEncoder().withoutPadding().encodeToString(wrapped)
+            store.edit { it[KEY_BROKER_PASS_ENC] = enc }
+        }
+    }
+
+    // ── BYOT (Bring Your Own TURN) Settings ──────────────────────────────────
+    // Each provider has its OWN credential slots, so switching provider can never send one
+    // provider's credential to another provider's server. Secrets (API key, passwords, shared
+    // secret, the custom JSON which usually embeds credentials) are KeyVault-encrypted
+    // (AndroidKeyStore AES-GCM); only ciphertext is in DataStore. Nothing here is ever sent to peers.
+
+    private fun sealString(plain: String): String? = plain.takeIf { it.isNotBlank() }?.let {
+        java.util.Base64.getEncoder().withoutPadding().encodeToString(keyVault.wrap(it.toByteArray(Charsets.UTF_8)))
+    }
+    private fun openString(enc: String?): String = if (enc.isNullOrBlank()) "" else runCatching {
+        String(keyVault.unwrap(java.util.Base64.getDecoder().decode(enc)), Charsets.UTF_8)
+    }.getOrDefault("")
+    private suspend fun putSecret(key: androidx.datastore.preferences.core.Preferences.Key<String>, value: String) {
+        val enc = sealString(value.trim())
+        store.edit { if (enc == null) it.remove(key) else it[key] = enc }
+    }
+
+    val turnProviderType: Flow<String> = store.data.map { it[KEY_TURN_PROVIDER] ?: "DEFAULT" }
+    suspend fun turnProviderTypeOnce(): String = turnProviderType.first()
+    suspend fun setTurnProviderType(type: String) { store.edit { it[KEY_TURN_PROVIDER] = type } }
+
+    // Metered (user's own account)
+    val turnMeteredDomain: Flow<String> = store.data.map { it[KEY_TURN_METERED_DOMAIN] ?: "" }
+    suspend fun turnMeteredDomainOnce(): String = turnMeteredDomain.first()
+    suspend fun setTurnMeteredDomain(domain: String) { store.edit { it[KEY_TURN_METERED_DOMAIN] = domain.trim() } }
+    suspend fun turnMeteredApiKeyOnce(): String = openString(store.data.first()[KEY_TURN_METERED_KEY_ENC])
+    suspend fun setTurnMeteredApiKey(apiKey: String) = putSecret(KEY_TURN_METERED_KEY_ENC, apiKey)
+    val turnMeteredUsername: Flow<String> = store.data.map { it[KEY_TURN_METERED_USER] ?: "" }
+    suspend fun turnMeteredUsernameOnce(): String = turnMeteredUsername.first()
+    suspend fun setTurnMeteredUsername(user: String) { store.edit { it[KEY_TURN_METERED_USER] = user.trim() } }
+    suspend fun turnMeteredPasswordOnce(): String = openString(store.data.first()[KEY_TURN_METERED_PASS_ENC])
+    suspend fun setTurnMeteredPassword(pass: String) = putSecret(KEY_TURN_METERED_PASS_ENC, pass)
+
+    // coturn (self-hosted)
+    val turnCustomHost: Flow<String> = store.data.map { it[KEY_TURN_CUSTOM_HOST] ?: "" }
+    suspend fun turnCustomHostOnce(): String = turnCustomHost.first()
+    suspend fun setTurnCustomHost(host: String) { store.edit { it[KEY_TURN_CUSTOM_HOST] = host.trim() } }
+    val turnCustomPort: Flow<Int> = store.data.map { it[KEY_TURN_CUSTOM_PORT] ?: 3478 }
+    suspend fun turnCustomPortOnce(): Int = turnCustomPort.first()
+    suspend fun setTurnCustomPort(port: Int) { store.edit { it[KEY_TURN_CUSTOM_PORT] = port.coerceIn(1, 65535) } }
+    /** TURNS (TLS) port; 0 = the server has no TLS listener. */
+    val turnCustomTlsPort: Flow<Int> = store.data.map { it[KEY_TURN_CUSTOM_TLS_PORT] ?: 5349 }
+    suspend fun turnCustomTlsPortOnce(): Int = turnCustomTlsPort.first()
+    suspend fun setTurnCustomTlsPort(port: Int) { store.edit { it[KEY_TURN_CUSTOM_TLS_PORT] = port.coerceIn(0, 65535) } }
+    /** true = the password field is coturn's static-auth-secret (REST API mode, time-limited creds). */
+    val turnCustomUseSharedSecret: Flow<Boolean> = store.data.map { it[KEY_TURN_CUSTOM_SECRET_MODE] ?: false }
+    suspend fun turnCustomUseSharedSecretOnce(): Boolean = turnCustomUseSharedSecret.first()
+    suspend fun setTurnCustomUseSharedSecret(on: Boolean) { store.edit { it[KEY_TURN_CUSTOM_SECRET_MODE] = on } }
+    val turnCustomUsername: Flow<String> = store.data.map { it[KEY_TURN_CUSTOM_USER] ?: "" }
+    suspend fun turnCustomUsernameOnce(): String = turnCustomUsername.first()
+    suspend fun setTurnCustomUsername(user: String) { store.edit { it[KEY_TURN_CUSTOM_USER] = user.trim() } }
+    suspend fun turnCustomPasswordOnce(): String = openString(store.data.first()[KEY_TURN_CUSTOM_PASS_ENC])
+    suspend fun setTurnCustomPassword(pass: String) = putSecret(KEY_TURN_CUSTOM_PASS_ENC, pass)
+
+    // Custom iceServers JSON (encrypted: it normally carries credentials). A value that still
+    // starts with '[' is a plaintext copy from the first BYOT build: read it, re-encrypt on save.
+    val turnCustomJson: Flow<String> = store.data.map { p ->
+        val raw = p[KEY_TURN_CUSTOM_JSON].orEmpty()
+        if (raw.trimStart().startsWith("[")) raw else openString(raw)
+    }
+    suspend fun turnCustomJsonOnce(): String = turnCustomJson.first()
+    suspend fun setTurnCustomJson(json: String) = putSecret(KEY_TURN_CUSTOM_JSON, json)
     suspend fun setDiMaxPropLambda(v: Double) { store.edit { it[KEY_LAMBDA] = v.coerceIn(0.0, 1.0).toFloat() } }
     suspend fun setQShapingEta(v: Double) { store.edit { it[KEY_ETA] = v.coerceIn(0.0, 1.0).toFloat() } }
 
@@ -176,10 +283,32 @@ class SettingsRepository @Inject constructor(
         const val DEFAULT_BROKER = com.dtn.mesh.receiver.RelayEndpoints.DEFAULT_URL
         const val DEFAULT_LAMBDA = 0.5
         const val DEFAULT_ETA = 0.2
+        const val DEFAULT_ALGORITHM = "EPIDEMIC"
+        const val DEFAULT_THEME = "DEFAULT"
         private val KEY_NAME = stringPreferencesKey("display_name")
         private val KEY_INET = booleanPreferencesKey("internet_enabled")
         private val KEY_BROKER = stringPreferencesKey("broker_url")
+        private val KEY_BROKER_USER = stringPreferencesKey("broker_username")
+        private val KEY_BROKER_PASS_ENC = stringPreferencesKey("broker_password_enc")
+        private val KEY_TURN_PROVIDER = stringPreferencesKey("turn_provider")
+        private val KEY_TURN_METERED_DOMAIN = stringPreferencesKey("turn_metered_domain")
+        private val KEY_TURN_METERED_KEY_ENC = stringPreferencesKey("turn_metered_key_enc")
+        private val KEY_TURN_CUSTOM_HOST = stringPreferencesKey("turn_custom_host")
+        private val KEY_TURN_CUSTOM_PORT = intPreferencesKey("turn_custom_port")
+        private val KEY_TURN_CUSTOM_USER = stringPreferencesKey("turn_custom_user")
+        private val KEY_TURN_CUSTOM_PASS_ENC = stringPreferencesKey("turn_custom_pass_enc")
+        private val KEY_TURN_CUSTOM_JSON = stringPreferencesKey("turn_custom_json")
+        private val KEY_TURN_METERED_USER = stringPreferencesKey("turn_metered_user")
+        private val KEY_TURN_METERED_PASS_ENC = stringPreferencesKey("turn_metered_pass_enc")
+        private val KEY_TURN_CUSTOM_TLS_PORT = intPreferencesKey("turn_custom_tls_port")
+        private val KEY_TURN_CUSTOM_SECRET_MODE = booleanPreferencesKey("turn_custom_secret_mode")
+        private val KEY_INTERNET_DIRECT = booleanPreferencesKey("internet_direct_experimental")
         private val KEY_DISCOVER = booleanPreferencesKey("discoverable")
+        private val KEY_ALGO = stringPreferencesKey("routing_algorithm")
+        private val KEY_THEME = stringPreferencesKey("chat_theme")
+        private val KEY_WALLPAPER_PATH = stringPreferencesKey("chat_wallpaper_path")
+        /** [chatTheme] value for the gallery-photo wallpaper. */
+        const val THEME_PHOTO = "PHOTO"
         private val KEY_LAMBDA = floatPreferencesKey("dimaxprop_lambda")
         private val KEY_ETA = floatPreferencesKey("q_shaping_eta")
         private val KEY_BLOCKED = stringSetPreferencesKey("blocked_nodes")

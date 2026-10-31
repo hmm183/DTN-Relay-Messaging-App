@@ -74,6 +74,7 @@ fun ContactPage(
     val metrics by viewModel.peerMetrics.collectAsState()
     val strategy by viewModel.activeStrategy.collectAsState()
     val peer = peers.firstOrNull { it.nodeId == nodeId }
+    val context = androidx.compose.ui.platform.LocalContext.current
     val snackbars = remember { SnackbarHostState() }
     UserMessageSnackbars(viewModel, snackbars)
     val actions = rememberContactActions(viewModel, onRemoved = { onClose() })
@@ -135,6 +136,20 @@ fun ContactPage(
 
             SectionHeader("Actions")
             DtnCard(contentPadding = PaddingValues(vertical = 4.dp)) {
+                if (peer.xPub != null && peer.edPub != null) {
+                    SettingRow(
+                        "Share contact link",
+                        icon = DtnIcons.Broadcast,
+                        subtitle = "Share ${peer.displayName()}\'s contact link with others",
+                        onClick = {
+                            val link = com.dtn.mesh.crypto.LinkGenerator.buildContactLink(
+                                com.dtn.mesh.model.NodeId(peer.nodeId), peer.xPub, peer.edPub, peer.displayName()
+                            )
+                            com.dtn.mesh.crypto.LinkGenerator.shareText(context, "Contact: ${peer.displayName()}", link)
+                        }
+                    )
+                }
+
                 SettingRow("Rename", icon = DtnIcons.Edit, subtitle = peer.customName?.let { "Nickname: $it" } ?: "Set a nickname",
                     onClick = { actions.rename(peer) })
                 SettingRow("Delete contact…", icon = DtnIcons.Delete, iconTint = DtnColors.Red, iconBackground = DtnColors.RedSoft,

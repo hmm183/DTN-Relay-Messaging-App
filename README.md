@@ -59,13 +59,22 @@ The application operates over three independent physical layers:
 
 ---
 
+### 4. Internet (optional)
+* **Two relays in parallel:** HiveMQ MQTT and a Cloudflare Worker WebSocket relay (`cloud/`). Every publish goes to both and receivers drop duplicates, so one relay being down doesn't stop delivery.
+* **WebRTC direct (experimental, Settings › Internet direct):** a direct data channel between two contacts, set up through the relays with signed and encrypted messages. Once up it is treated like a Bluetooth link. Each phone uses its own TURN server settings (Settings › TURN server).
+* **Links:** contacts and groups can be shared as `https://<worker>/c#…` / `/g#…` links or as plain codes.
+
+Deployment values (Worker host, stop-gap TURN key) live in the git-ignored `local.properties`; see `app/build.gradle.kts` and `cloud/README.md`. Feature status: [`docs/FEATURES.md`](docs/FEATURES.md).
+
 ## Routing & Reinforcement Learning Engine
 
-The core forwarding path uses a hybrid model where classical probabilities feed as inputs into a Double Q-Learning state formulation. Five routing strategies are selectable at runtime: **PRoPHET**, **STABLE-PROPHET**, **MaxProp**, **Epidemic**, and **Double Q-Learning**.
+The core forwarding path uses a hybrid model where classical probabilities feed as inputs into a Double Q-Learning state formulation. Six routing strategies are selectable at runtime (Developer Tools › Routing & Tuning): **PRoPHET**, **STABLE-PROPHET**, **MaxProp**, **DiMaxProp**, **Epidemic**, and **Double Q-Learning**. **Epidemic is the default**, and the choice is saved across restarts (also when the background service starts without the UI). Every strategy keeps learning while another one is active.
+
+**Over the internet relay** no strategy hands someone else's message to a relay-only phone (routing summaries never cross the relay). Instead a phone holding a message for an unreachable destination asks the relay "who sees it over radio?" (`dtn/v1/query/who_sees/<id>`); a phone that has it as a Bluetooth / Wi-Fi Direct / hub neighbour answers, and becomes a carrier for it for 3 minutes. That is how A (internet only) → B (internet + BLE) → C (BLE only) works. See `.kiro/steering/wire-protocol.md`.
 
 ### PRoPHET — Probabilistic Routing (RFC 6693)
 
-The default strategy implements the **PRoPHETv2 / RFC 6693** delivery-predictability model ([Lindgren et al., RFC 6693](https://www.rfc-editor.org/rfc/rfc6693)). Each node maintains a delivery predictability `P(a, b) ∈ [0, 1]` per known destination, updated on three events:
+This strategy implements the **PRoPHETv2 / RFC 6693** delivery-predictability model ([Lindgren et al., RFC 6693](https://www.rfc-editor.org/rfc/rfc6693)). Each node maintains a delivery predictability `P(a, b) ∈ [0, 1]` per known destination, updated on three events:
 
 * **Direct encounter (delta-capped):**
 

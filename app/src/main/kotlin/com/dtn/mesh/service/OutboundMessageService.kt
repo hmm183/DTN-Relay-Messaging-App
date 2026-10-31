@@ -15,6 +15,10 @@ import com.dtn.mesh.receiver.InternetTransportAdapter
 import com.dtn.mesh.routing.AlgorithmCode
 import com.dtn.mesh.routing.StrategySelector
 import com.dtn.mesh.settings.SettingsRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -38,15 +42,62 @@ class OutboundMessageService @Inject constructor(
     private val contactDao: ContactDao,
     private val benchmark: com.dtn.mesh.learning.BenchmarkTracker,
 ) {
-    private companion object {
+    companion object {
         /** Lifetime of an announce broadcast to everyone (Discover on). */
-        const val BROADCAST_ANNOUNCE_TTL_MS = 10 * 60_000L
+        private const val BROADCAST_ANNOUNCE_TTL_MS = 10 * 60_000L
         /** Lifetime of a direct announce to one contact; one is sent at most this often per contact. */
-        const val DIRECT_ANNOUNCE_TTL_MS = 30 * 60_000L
+        private const val DIRECT_ANNOUNCE_TTL_MS = 30 * 60_000L
+        /** A DM queues our direct announce first unless we sent one to that contact this recently. */
+        private const val DM_ANNOUNCE_COOLDOWN_MS = 60_000L
+        /** At most one announce request to, and one answer for, each peer per this window. */
+        private const val ANNOUNCE_REQUEST_COOLDOWN_MS = 2 * 60_000L
+        /**
+         * A direct ANNOUNCE asking for one back ("I couldn't decrypt your DM"): the signed flags
+         * byte of the announce payload ([Announce.FLAG_WANTS_REPLY]). Not the bundle header's flags
+         * byte, whose bits 6-7 are the wire version. Only meaningful once the announce is verified.
+         */
+        fun isAnnounceRequest(msg: DtnMessage): Boolean =
+            msg.messageType == DtnMessageType.ANNOUNCE &&
+                (com.dtn.mesh.crypto.Announce.flagsOf(msg.payloadBytes) and com.dtn.mesh.crypto.Announce.FLAG_WANTS_REPLY) != 0
     }
+
+    /** Peer → when we last asked it for its announce / answered its request. */
+    private val lastAnnounceRequestMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val lastAnnounceAnswerMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /**
+     * We received a DM from [peer] we can't decrypt (no keys for it yet): send our own direct
+     * announce flagged as a request, so [peer] learns we're missing its keys and announces back.
+     */
+    suspend fun requestAnnounceFrom(peer: NodeId) {
+        if (!claim(lastAnnounceRequestMs, peer.value, ANNOUNCE_REQUEST_COOLDOWN_MS)) return
+        val name = runCatching { settings.displayNameOnce() }.getOrDefault("")
+        sendAnnounceTo(peer, name, wantsReply = true)
+    }
+
+    /** [peer] asked for our keys: a fresh direct announce (unflagged, so it can't ping-pong). */
+    suspend fun answerAnnounceRequest(peer: NodeId) {
+        val isAdded = runCatching { contactDao.getByNodeId(peer.value)?.isAdded == true }.getOrDefault(false)
+        val discoverOn = runCatching { settings.discoverableOnce() }.getOrDefault(false)
+        if (!isAdded && !discoverOn) return
+        if (!claim(lastAnnounceAnswerMs, peer.value, ANNOUNCE_REQUEST_COOLDOWN_MS)) return
+        val name = runCatching { settings.displayNameOnce() }.getOrDefault("")
+        sendAnnounceTo(peer, name)
+    }
+
+    /** True (and records now) when [key] wasn't claimed within [windowMs]. */
+    private fun claim(map: java.util.concurrent.ConcurrentHashMap<String, Long>, key: String, windowMs: Long): Boolean {
+        val now = System.currentTimeMillis()
+        var won = false
+        map.compute(key) { _, last -> if (last == null || now - last >= windowMs) { won = true; now } else last }
+        return won
+    }
+
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     /** Contact node id → when we last queued our direct announce to them. */
     private val lastDirectAnnounceMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     sealed interface Result {
         data class Sent(val message: DtnMessage) : Result
         /**
@@ -64,12 +115,23 @@ class OutboundMessageService @Inject constructor(
      * Seal + enqueue a text message.
      * @param dest peer node id for a DM, or [NodeId.BROADCAST] for broadcast/group.
      * @param channel 0 for DM/broadcast, >0 for a group channel.
+     * @param replyToId optional parent message ID being replied to.
+     * @param replySnippet optional preview snippet of the parent message.
      */
-    suspend fun sendText(text: String, dest: NodeId, channel: Int, ttlMs: Long): Result {
+    suspend fun sendText(
+        text: String,
+        dest: NodeId,
+        channel: Int,
+        ttlMs: Long,
+        replyToId: String? = null,
+        replySnippet: String? = null,
+    ): Result {
         val now = System.currentTimeMillis()
         val peer = if (channel > 0 || dest == NodeId.BROADCAST) null else dest.value
-        if (peer != null && runCatching { settings.hasPendingKeys(peer) }.getOrDefault(false)) return hold(text, dest, now)
-        return sealAndQueue(text, dest, channel, ttlMs, existingId = null, chatCreatedAtMs = now)
+        if (peer != null && runCatching { settings.hasPendingKeys(peer) }.getOrDefault(false)) {
+            return hold(text, dest, now, replyToId, replySnippet)
+        }
+        return sealAndQueue(text, dest, channel, ttlMs, existingId = null, chatCreatedAtMs = now, replyToId = replyToId, replySnippet = replySnippet)
     }
 
     /**
@@ -79,22 +141,43 @@ class OutboundMessageService @Inject constructor(
     suspend fun resendHeld(peer: NodeId, ttlMs: Long): Int {
         var sent = 0
         for (row in runCatching { chatDao.getHeld(peer.value) }.getOrDefault(emptyList())) {
-            val r = sealAndQueue(row.text, peer, 0, ttlMs, existingId = row.id, chatCreatedAtMs = row.createdAtMs)
+            val r = sealAndQueue(
+                row.text, peer, 0, ttlMs, existingId = row.id, chatCreatedAtMs = row.createdAtMs,
+                replyToId = row.replyToId, replySnippet = row.replySnippet,
+            )
             if (r is Result.Sent) sent++
         }
         return sent
     }
 
     /** Store a DM as HELD: in the chat (Queued), not sealed, not in the buffer. */
-    private suspend fun hold(text: String, dest: NodeId, now: Long): Result {
-        val plain = AlgorithmCode.prefix(strategySelector.activeType, text.toByteArray(Charsets.UTF_8))
+    private suspend fun hold(
+        text: String,
+        dest: NodeId,
+        now: Long,
+        replyToId: String? = null,
+        replySnippet: String? = null,
+    ): Result {
+        val plain = AlgorithmCode.prefix(strategySelector.activeType, ReplyCodec.encode(text, replyToId, replySnippet))
         val budget = envelope.maxPlaintextBytes(dest, 0)
         val fragments = (plain.size + budget - 1) / budget
         if (fragments > Fragmenter.MAX_FRAGMENTS) return Result.TooLong(budget * Fragmenter.MAX_FRAGMENTS)
         // The id it will travel under: a plain id, or the canonical parent id of its fragments.
         val id = if (fragments <= 1) UUID.randomUUID().toString() else Fragmenter.canonicalParent(UUID.randomUUID().toString())
-        chatDao.upsert(ChatMessageEntity(id, dest.value, dest.value, 0, ChatMessageEntity.Direction.OUT, text,
-            ChatMessageEntity.Status.HELD, now))
+        chatDao.upsert(
+            ChatMessageEntity(
+                id = id,
+                convKey = dest.value,
+                peerNodeId = dest.value,
+                channel = 0,
+                direction = ChatMessageEntity.Direction.OUT,
+                text = text,
+                status = ChatMessageEntity.Status.HELD,
+                createdAtMs = now,
+                replyToId = replyToId,
+                replySnippet = replySnippet,
+            )
+        )
         return Result.Held(id)
     }
 
@@ -103,7 +186,14 @@ class OutboundMessageService @Inject constructor(
      * wire); [chatCreatedAtMs] keeps its place in the chat. The bundle's lifetime starts now.
      */
     private suspend fun sealAndQueue(
-        text: String, dest: NodeId, channel: Int, ttlMs: Long, existingId: String?, chatCreatedAtMs: Long,
+        text: String,
+        dest: NodeId,
+        channel: Int,
+        ttlMs: Long,
+        existingId: String?,
+        chatCreatedAtMs: Long,
+        replyToId: String? = null,
+        replySnippet: String? = null,
     ): Result {
         val now = System.currentTimeMillis()
         val isBroadcast = dest == NodeId.BROADCAST
@@ -113,10 +203,21 @@ class OutboundMessageService @Inject constructor(
             else -> dest.value
         }
         val peer = if (channel > 0 || isBroadcast) null else dest.value
+
+        // Proactively ensure the recipient has our signed identity and public keys
+        if (peer != null) {
+            val last = lastDirectAnnounceMs[dest.value] ?: 0L
+            if (now - last >= DM_ANNOUNCE_COOLDOWN_MS) {
+                val name = runCatching { settings.displayNameOnce() }.getOrDefault("")
+                sendAnnounceTo(dest, name)
+            }
+        }
+
         // A DM starts with one byte naming the routing algorithm selected here, inside the
         // encryption, so the receiver's Message info can show it ([AlgorithmCode]).
-        val plain = if (peer != null) AlgorithmCode.prefix(strategySelector.activeType, text.toByteArray(Charsets.UTF_8))
-        else text.toByteArray(Charsets.UTF_8)
+        // Reply metadata (if any) rides inside the encrypted body ([ReplyCodec]).
+        val body = ReplyCodec.encode(text, replyToId, replySnippet)
+        val plain = if (peer != null) AlgorithmCode.prefix(strategySelector.activeType, body) else body
         val budget = envelope.maxPlaintextBytes(dest, channel)
 
         // ── Single frame (the common case) ──
@@ -134,7 +235,20 @@ class OutboundMessageService @Inject constructor(
             // DMs await an end-to-end receipt (SENDING → DELIVERED); broadcast/group have no single
             // receipt, so they are shown as SENT once queued/flooded.
             val status = if (channel > 0 || isBroadcast) ChatMessageEntity.Status.SENT else ChatMessageEntity.Status.SENDING
-            chatDao.upsert(ChatMessageEntity(id, convKey, peer, channel, ChatMessageEntity.Direction.OUT, text, status, chatCreatedAtMs))
+            chatDao.upsert(
+                ChatMessageEntity(
+                    id = id,
+                    convKey = convKey,
+                    peerNodeId = peer,
+                    channel = channel,
+                    direction = ChatMessageEntity.Direction.OUT,
+                    text = text,
+                    status = status,
+                    createdAtMs = chatCreatedAtMs,
+                    replyToId = replyToId,
+                    replySnippet = replySnippet,
+                )
+            )
             val stored = queueManager.ingest(msg)
             if (stored) {
                 journalCreated(msg, fragments = 1)
@@ -174,8 +288,20 @@ class OutboundMessageService @Inject constructor(
         }
         // One chat row for the whole message, keyed by the canonical parent id (status SENT: a
         // multi-fragment message is acknowledged per fragment, not tracked as one delivery).
-        chatDao.upsert(ChatMessageEntity(canonical, convKey, peer, channel, ChatMessageEntity.Direction.OUT, text,
-            ChatMessageEntity.Status.SENT, chatCreatedAtMs))
+        chatDao.upsert(
+            ChatMessageEntity(
+                id = canonical,
+                convKey = convKey,
+                peerNodeId = peer,
+                channel = channel,
+                direction = ChatMessageEntity.Direction.OUT,
+                text = text,
+                status = ChatMessageEntity.Status.SENT,
+                createdAtMs = chatCreatedAtMs,
+                replyToId = replyToId,
+                replySnippet = replySnippet,
+            )
+        )
         return first?.let { Result.Sent(it) } ?: Result.Error
     }
 
@@ -227,18 +353,21 @@ class OutboundMessageService @Inject constructor(
      * Queue our signed identity for one contact only (just added them, or Discover is off). It
      * travels like a DM: carriers pass it on but only [peer] pins the keys. Never to a blocked contact.
      */
-    suspend fun sendAnnounceTo(peer: NodeId, displayName: String) {
+    suspend fun sendAnnounceTo(peer: NodeId, displayName: String, wantsReply: Boolean = false) {
         if (peer == identity.nodeId) return
         if (peer.value in runCatching { settings.blockedNodesOnce() }.getOrDefault(emptySet())) return
         lastDirectAnnounceMs[peer.value] = System.currentTimeMillis()
-        queueManager.ingest(buildAnnounce(displayName, peer, DIRECT_ANNOUNCE_TTL_MS))
+        val msg = buildAnnounce(displayName, peer, DIRECT_ANNOUNCE_TTL_MS, wantsReply)
+        queueManager.ingest(msg)
+        bridgeToRelay(msg)
     }
 
-    private fun buildAnnounce(displayName: String, dest: NodeId, ttlMs: Long): DtnMessage {
+    private fun buildAnnounce(displayName: String, dest: NodeId, ttlMs: Long, wantsReply: Boolean = false): DtnMessage {
         val payload = Announce.build(
             nodeNum = identity.nodeNum32,
             xPub = identity.xPub, edPub = identity.edPub, edSeed = identity.edSeed,
             name = displayName, issuedAtSec = (System.currentTimeMillis() / 1000L).toInt(),
+            flags = if (wantsReply) Announce.FLAG_WANTS_REPLY else 0,
         )
         return DtnMessage(
             id = UUID.randomUUID().toString(),
@@ -258,14 +387,20 @@ class OutboundMessageService @Inject constructor(
      * the relay, keeps them until the end-to-end receipt returns, and retries otherwise.
      */
     private fun bridgeToRelay(msg: DtnMessage) {
-        if (msg.destinationNodeId != NodeId.BROADCAST) return
-        internet.publishBroadcast(msg) {
-            // Control traffic (announces) stays out of the message journal.
-            if (msg.messageType == DtnMessageType.DATA) {
-                lifecycle.log(LifecycleEvent.FORWARDED, msg.id,
-                    origin = msg.originNodeId.value, dest = "BROADCAST",
-                    extra = "${if (msg.channel > 0) "group message" else "broadcast"} published to everyone on the internet relay")
-                lifecycle.recordRelayPublish(msg.id, "Internet relay")
+        if (msg.destinationNodeId == NodeId.BROADCAST) {
+            internet.publishBroadcast(msg) {
+                // Control traffic (announces) stays out of the message journal.
+                if (msg.messageType == DtnMessageType.DATA) {
+                    lifecycle.log(LifecycleEvent.FORWARDED, msg.id,
+                        origin = msg.originNodeId.value, dest = "BROADCAST",
+                        extra = "${if (msg.channel > 0) "group message" else "broadcast"} published to everyone on the internet relay")
+                    lifecycle.recordRelayPublish(msg.id, "Internet relay")
+                }
+            }
+        } else if (msg.messageType == DtnMessageType.ANNOUNCE) {
+            // Direct announce to a single peer over Internet Relay
+            scope.launch {
+                runCatching { internet.sendMessage(msg, msg.destinationNodeId) }
             }
         }
     }

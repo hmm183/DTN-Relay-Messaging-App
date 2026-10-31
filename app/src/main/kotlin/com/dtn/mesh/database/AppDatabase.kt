@@ -21,10 +21,6 @@ import com.dtn.mesh.database.entity.SeenBundleEntity
 
 /**
  * Room database for the DTN Mesh Relay Layer.
- *
- * Schema version 1: Initial schema with message buffer, contact state, and encounter history.
- *
- * Export schema = true for migration tooling in future versions.
  */
 @Database(
     entities = [
@@ -40,14 +36,13 @@ import com.dtn.mesh.database.entity.SeenBundleEntity
     // (chat_messages, seen_bundles, groups) for the encryption/chat/group work.
     // v4: contacts.is_added (Discover mode) + the DiMaxProp / hop / relay-buffer Q-learning state
     // columns and shaping_reward on forwarding_decisions.
-    version = 4,
+    // v5: ChatMessageEntity.reply_to_id and reply_snippet.
+    version = 5,
     exportSchema = true,
-    // Both steps are purely additive, so Room generates them from the exported schemas; 3 → 4 also
-    // runs [Migration3To4.onPostMigrate] to keep existing friends in the chat list. The destructive
-    // fallback in DatabaseModule remains only as a safety net for an unknown version jump.
     autoMigrations = [
         androidx.room.AutoMigration(from = 2, to = 3),
         androidx.room.AutoMigration(from = 3, to = 4, spec = AppDatabase.Migration3To4::class),
+        androidx.room.AutoMigration(from = 4, to = 5),
     ],
 )
 @TypeConverters(Converters::class)

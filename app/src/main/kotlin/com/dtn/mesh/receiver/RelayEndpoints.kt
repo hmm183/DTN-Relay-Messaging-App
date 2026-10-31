@@ -63,16 +63,21 @@ object RelayEndpoints {
     }
 
     /** The primary spec first, then known-good alternatives for the public HiveMQ broker. */
-    fun specsFor(url: String): List<Spec> {
+    fun specsFor(url: String, hasAuth: Boolean = false): List<Spec> {
         val primary = parse(url)
-        if (!primary.host.equals(PUBLIC_HIVEMQ, ignoreCase = true)) return listOf(primary)
-        val host = primary.host
-        return listOf(
-            primary,
-            Spec(Scheme.TLS, host, 8883),
-            Spec(Scheme.TCP, host, 1883),
-            Spec(Scheme.WSS, host, 8884, "/mqtt"),
-        ).distinct()
+        val base = if (!primary.host.equals(PUBLIC_HIVEMQ, ignoreCase = true)) {
+            listOf(primary)
+        } else {
+            val host = primary.host
+            listOf(
+                primary,
+                Spec(Scheme.TLS, host, 8883),
+                Spec(Scheme.TCP, host, 1883),
+                Spec(Scheme.WSS, host, 8884, "/mqtt"),
+            ).distinct()
+        }
+        // With credentials set, only TLS or secure WebSocket endpoints are allowed (never plain TCP).
+        return if (hasAuth) base.filter { it.scheme != Scheme.TCP } else base
     }
 
     /**

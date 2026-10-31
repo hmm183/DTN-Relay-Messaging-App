@@ -1,13 +1,16 @@
 package com.dtn.mesh.receiver
 
+import java.util.Base64
+
+
 /**
  * Framing for bundles carried over the MQTT internet relay.
  *
- * `[0xD7][version=1][4B publisher node num, big-endian][DTN wire bytes…]`
+ * `[0xD7][version=1][4B publisher node num, big-endian][DTN wire bytes...]`
  *
  * The 6-byte prefix tells the receiver which node published the bundle (its immediate previous
  * hop on the relay), so echo suppression works on the internet path the same way it does over
- * BLE. It is NOT authenticated — receivers must never use it for trust decisions (routing
+ * BLE. It is NOT authenticated - receivers must never use it for trust decisions (routing
  * summaries arriving over the relay are dropped for exactly this reason). Payloads without the
  * prefix are accepted as raw wire bytes for compatibility with the first relay build.
  */
@@ -40,40 +43,50 @@ object InternetFrames {
     }
 }
 
+
 /**
  * Retained presence records on `dtn/v1/presence/<node hex>`: ASCII `on:<epochSec>` or
- * `off:<epochSec>`. The broker keeps the last one per node; the Last Will publishes `off` when a
- * client drops without saying goodbye, and live clients refresh `on` on a heartbeat.
+ * `on:<epochSec>:<base64Name>` or `off:<epochSec>`. The broker keeps the last one per node; the
+ * Last Will publishes `off` when a client drops without saying goodbye, and live clients refresh
+ * `on` on a heartbeat.
  */
 object Presence {
-    data class Status(val online: Boolean, val epochSec: Long)
+    data class Status(val online: Boolean, val epochSec: Long, val name: String? = null)
 
-    fun encode(online: Boolean, epochSec: Long): ByteArray =
-        "${if (online) "on" else "off"}:$epochSec".toByteArray(Charsets.US_ASCII)
+    fun encode(online: Boolean, epochSec: Long, name: String? = null): ByteArray {
+        val b64Name = name?.takeIf { it.isNotBlank() }?.let {
+            Base64.getEncoder().withoutPadding().encodeToString(it.toByteArray(Charsets.UTF_8))
+        }
+        return if (b64Name != null) {
+            "${if (online) "on" else "off"}:$epochSec:$b64Name".toByteArray(Charsets.US_ASCII)
+        } else {
+            "${if (online) "on" else "off"}:$epochSec".toByteArray(Charsets.US_ASCII)
+        }
+    }
 
     /** Parse a presence payload. Empty (a cleared retained message) means offline. */
     fun decode(payload: ByteArray): Status? {
         if (payload.isEmpty()) return Status(online = false, epochSec = 0L)
         val text = runCatching { String(payload, Charsets.US_ASCII) }.getOrNull() ?: return null
-        val state = text.substringBefore(':')
-        val ts = text.substringAfter(':', "").toLongOrNull() ?: return null
+        val parts = text.split(":", limit = 3)
+        if (parts.isEmpty()) return null
+        val state = parts[0]
+        val ts = parts.getOrNull(1)?.toLongOrNull() ?: return null
+        val name = if (parts.size >= 3 && parts[2].isNotBlank()) {
+            runCatching {
+                String(Base64.getDecoder().decode(parts[2]), Charsets.UTF_8)
+            }.getOrNull()
+        } else null
+
         return when (state) {
-            "on" -> Status(true, ts)
-            "off" -> Status(false, ts)
+            "on" -> Status(true, ts, name)
+            "off" -> Status(false, ts, name)
             else -> null
         }
     }
 
     /**
      * When a presence record proves the node was last online (epoch ms), or null if it doesn't.
-     *
-     * - A **live** record (published while we're subscribed) is fresh by definition: [nowMs].
-     * - A **retained** record is the broker replaying the node's *last* state when we subscribe.
-     *   Live nodes refresh it every heartbeat, so it only counts while its own timestamp is
-     *   younger than [staleMs]; an older one was left behind by a node that stopped refreshing
-     *   (it went offline without its will firing). It then counts from when it was sent, so the
-     *   node expires on time instead of a full stale window after we happened to subscribe.
-     * - A timestamp up to [maxSkewMs] in the future is clock drift (treated as now); further is bogus.
      */
     fun heardAtMs(status: Status, retained: Boolean, nowMs: Long, staleMs: Long, maxSkewMs: Long): Long? {
         if (!status.online) return null

@@ -24,9 +24,11 @@ import com.dtn.mesh.routing.RoutingStrategy
  *   publish, a hub flood) goes to the same peer at most once per 30 s; a direct delivery over a link
  *   that ends at the destination is never held back. A mule copy that a BLE / Wi-Fi Direct write
  *   handed over (acknowledged) goes to that peer once per session.
- * - Relay-only peers carry no one else's DMs; a phone reached only through our hub gets only the DMs
- *   addressed to it; our hub gets each DM once per hub session (unless its destination is reachable
- *   another way) and bypasses the routing strategy.
+ * - Relay-only peers carry no one else's DMs unless approved (the orchestrator approves a DM for a
+ *   relay peer only after that peer answered a route query saying its radio reaches the
+ *   destination: multi-hop A → relay → B → radio → C); a phone reached only through our hub gets only the DMs addressed to it; our hub
+ *   gets each DM once per hub session (unless its destination is reachable another way) and bypasses
+ *   the routing strategy.
  * - The routing strategy vetoes mule traffic only ([approvedByStrategy], or Q-learning's
  *   [qLearningPass]); direct deliveries, broadcasts and hub hand-offs bypass it.
  * - A bundle goes out with one more hop ([onWire]); on the wire its TTL is what is left
@@ -37,7 +39,7 @@ object CarrierRules {
     /** The peer a pass runs for (the same for every bundle in it). */
     data class Peer(
         val id: NodeId,
-        /** Only the internet relay reaches it right now: relay semantics, no custody. */
+        /** Only the internet relay reaches it right now: relay semantics. */
         val relay: Boolean = false,
         /** Our LoRa hub. */
         val isHub: Boolean = false,
@@ -96,8 +98,8 @@ object CarrierRules {
         // Never echo back to the original sender.
         if (msg.originNodeId.value == p) return Verdict.Hold(HoldReason.PEER_IS_ORIGIN)
         val isDirectDelivery = msg.destinationNodeId.value == p
-        // Relay-only peers never take custody of someone else's DM over the internet.
-        if (peer.relay && !isDirectDelivery && !isBroadcast) return Verdict.Hold(HoldReason.NO_RELAY_CUSTODY)
+        // Relay-only peers take custody of someone else's DM only when approved (route query answer)
+        if (peer.relay && !isDirectDelivery && !isBroadcast && msg.id !in approved) return Verdict.Hold(HoldReason.NO_RELAY_CUSTODY)
         // A phone reached only through our hub: just the DMs addressed to it.
         if (peer.hubOnly && !isDirectDelivery) return Verdict.Hold(HoldReason.NOT_FOR_HUB_PHONE)
         // The hub: each DM once per hub session (it keeps a copy and replays it to the phone when it

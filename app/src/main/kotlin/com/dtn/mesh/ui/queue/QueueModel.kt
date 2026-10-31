@@ -426,7 +426,7 @@ internal object QueueText {
 
     /** Under "To: …": our own text, or "Carrying for vrishank · encrypted" for someone else's DM. */
     fun dmPreview(row: DmRow, label: (String) -> String): String = when {
-        row.own -> row.text?.let { GroupInviteDm.preview(it) ?: it.replace('\n', ' ').take(80) } ?: "Your message (its chat was deleted)"
+        row.own -> row.text?.let { com.dtn.mesh.ui.chats.ContactCardDm.preview(it) ?: GroupInviteDm.preview(it) ?: it.replace('\n', ' ').take(80) } ?: "Your message (its chat was deleted)"
         row.state == DeliveryState.DELIVERED -> "Carried for ${label(row.origin8)} · encrypted"
         else -> "Carrying for ${label(row.origin8)} · encrypted"
     }

@@ -127,6 +127,16 @@ fun IdentityPage(viewModel: DtnViewModel, onBack: () -> Unit) {
                 }
             }
 
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PrimaryButton("Share link", onClick = {
+                    val link = viewModel.myInviteLink()
+                    com.dtn.mesh.crypto.LinkGenerator.shareText(context, "DTN Mesh Contact Link", link)
+                }, modifier = Modifier.weight(1f))
+                OutlineButton("Copy link", onClick = {
+                    val link = viewModel.myInviteLink()
+                    com.dtn.mesh.crypto.LinkGenerator.copyToClipboard(context, "Contact link", link)
+                }, modifier = Modifier.weight(1f))
+            }
             PrimaryButton("Share my QR", onClick = {
                 scope.launch {
                     if (!QrShare.shareAsync(context, qr, "Share my DTN contact QR")) viewModel.showMessage("Couldn't share the QR image")

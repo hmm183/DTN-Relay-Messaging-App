@@ -40,3 +40,7 @@
 # Optional LDAP certificate-store code paths reference JNDI (javax.naming, covered above).
 -dontwarn org.bouncycastle.jce.provider.X509LDAPCertStoreSpi
 -dontwarn org.bouncycastle.x509.util.LDAPStoreHelper
+
+# ── WebRTC (native JNI methods and classes called by native code) ────────────
+-keep class org.webrtc.** { *; }
+-dontwarn org.webrtc.**

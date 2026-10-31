@@ -49,6 +49,14 @@ data class ChatMessageEntity(
     /** When the message was created/received, for ordering (epoch ms). */
     @ColumnInfo(name = "created_at_ms")
     val createdAtMs: Long,
+
+    /** Parent message id when this message is a reply to an earlier message. */
+    @ColumnInfo(name = "reply_to_id", defaultValue = "NULL")
+    val replyToId: String? = null,
+
+    /** Quoted snippet preview of the parent message for rendering reply context. */
+    @ColumnInfo(name = "reply_snippet", defaultValue = "NULL")
+    val replySnippet: String? = null,
 ) {
     object Direction { const val OUT = "OUT"; const val IN = "IN" }
     object Status {

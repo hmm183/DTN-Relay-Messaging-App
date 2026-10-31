@@ -11,6 +11,7 @@ import java.nio.ByteBuffer
  * ```
  * version(1)=2 flags(1) nodeNum(4) xPub(32) edPub(32) issuedAt(4, epoch s) nameLen(1) name(n) sig(64)
  * ```
+ * flags: bit0 = [FLAG_WANTS_REPLY] (Oct 2026), other bits 0. Older builds write 0 and ignore it.
  * The node id is inside the signature, so an announce can't be re-wrapped under another origin.
  * Version 1 (older builds) has no node id field: its node id is derived from the keys
  * ([DtnCrypto.deriveNodeNum]); those are still accepted. Max size 187 B (fits one LoRa frame).
@@ -23,18 +24,31 @@ data class Announce(
     val issuedAtSec: Int,
     val name: String,
     val version: Int = VERSION,
+    /** The signed flags byte ([FLAG_WANTS_REPLY]); older builds send 0 and ignore it. */
+    val flags: Int = 0,
 ) {
     companion object {
         const val VERSION = 2
+        /**
+         * "I couldn't decrypt your DM, please announce back" (a direct announce from the receiver
+         * of an undecryptable DM). Inside the signature, so a carrier can't add or strip it.
+         */
+        const val FLAG_WANTS_REPLY = 0x01
+
+        /** The payload's flags byte without verifying (only for an announce already verified). */
+        fun flagsOf(payload: ByteArray): Int = if (payload.size >= 2) payload[1].toInt() and 0xFF else 0
         private const val VERSION_KEY_DERIVED = 1
         private const val MAX_NAME = 48
         private const val SIG_LEN = 64
 
         /** Build and sign a version-2 announce payload with this node's Ed25519 seed. */
-        fun build(nodeNum: Int, xPub: ByteArray, edPub: ByteArray, edSeed: ByteArray, name: String, issuedAtSec: Int): ByteArray {
+        fun build(
+            nodeNum: Int, xPub: ByteArray, edPub: ByteArray, edSeed: ByteArray, name: String, issuedAtSec: Int,
+            flags: Int = 0,
+        ): ByteArray {
             val nameBytes = nameBytes(name)
             val body = ByteBuffer.allocate(1 + 1 + 4 + 32 + 32 + 4 + 1 + nameBytes.size)
-                .put(VERSION.toByte()).put(0)
+                .put(VERSION.toByte()).put(flags.toByte())
                 .putInt(nodeNum)
                 .put(xPub).put(edPub)
                 .putInt(issuedAtSec)
@@ -67,7 +81,7 @@ data class Announce(
             if (payload.size < 1 + 1 + idLen + 32 + 32 + 4 + 1 + SIG_LEN) return null
             val buf = ByteBuffer.wrap(payload)
             buf.get() // version
-            buf.get() // flags
+            val flags = buf.get().toInt() and 0xFF
             val signedNode = if (idLen > 0) buf.getInt() else null
             val xPub = ByteArray(32).also { buf.get(it) }
             val edPub = ByteArray(32).also { buf.get(it) }
@@ -79,7 +93,7 @@ data class Announce(
             val body = payload.copyOfRange(0, payload.size - SIG_LEN)
             if (!DtnCrypto.ed25519Verify(edPub, body, sig)) return null
             val nodeNum = signedNode ?: DtnCrypto.deriveNodeNum(xPub, edPub)
-            return Announce(nodeNum, xPub, edPub, issuedAt, String(name, Charsets.UTF_8), version)
+            return Announce(nodeNum, xPub, edPub, issuedAt, String(name, Charsets.UTF_8), version, flags)
         }
 
         private fun nameBytes(name: String): ByteArray =

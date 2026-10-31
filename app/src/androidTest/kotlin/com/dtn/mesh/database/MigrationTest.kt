@@ -84,4 +84,35 @@ class MigrationTest {
         }
         db.close()
     }
+
+    @Test
+    fun migrate4To5_keepsChats_andAddsEmptyReplyColumns() {
+        helper.createDatabase(testDb, 4).apply {
+            execSQL(
+                "INSERT INTO chat_messages (id, conv_key, peer_node_id, channel, direction, text, status, created_at_ms) " +
+                    "VALUES ('m1', '!0000000a', '!0000000a', 0, 'OUT', 'hello', 'DELIVERED', 1)",
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(testDb, 5, true)
+
+        db.query("SELECT text, status, reply_to_id, reply_snippet FROM chat_messages WHERE id = 'm1'").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("hello", c.getString(0))
+            assertEquals("DELIVERED", c.getString(1))
+            assertTrue(c.isNull(2))
+            assertTrue(c.isNull(3))
+        }
+        // A reply row can be written after the migration.
+        db.execSQL(
+            "INSERT INTO chat_messages (id, conv_key, peer_node_id, channel, direction, text, status, created_at_ms, " +
+                "reply_to_id, reply_snippet) VALUES ('m2', '!0000000a', '!0000000a', 0, 'IN', 'yes', 'RECEIVED', 2, 'm1', 'hello')",
+        )
+        db.query("SELECT reply_to_id FROM chat_messages WHERE id = 'm2'").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("m1", c.getString(0))
+        }
+        db.close()
+    }
 }

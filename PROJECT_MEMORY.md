@@ -1334,3 +1334,74 @@ Delete contact + Block (blocked contacts still get receipts) · one identity per
   1 s ticks while searching; create wait 5 s; "running" only while P2P is on; a new owner skips discovery 20 s.
 - Time to link 2.6–2.7 s on the Redmi + Kunal's OnePlus (was 11.6–46.6 s). Tests 396 → 398. Installed on both;
   dist `DTN-Mesh-debug-2026-10-24-fix2.apk` (supersedes fix1). Older builds still join, scanning every channel.
+
+# PART M — 2026-10-30: delivery truth, multi-hop over the relay, WhatsApp-style UX (uncommitted on `main`)
+
+Built on `1b4efee`. Unit tests 424 → 429, `assembleDebug` clean. **Nothing here is verified on devices yet.**
+Wire / steering details: `.kiro/steering/wire-protocol.md` (relay, announces, replies) and `project.md`.
+
+## M.1 Delivery and keys
+- A direct BLE / Wi-Fi Direct write to the destination is **Sent ✓**, no longer Delivered: Delivered ✓✓ only from
+  the receipt (`ChatDao.markSentIfSending`, guarded so a retransmit can't downgrade Delivered). A relay publish
+  stays Queued (an interim build wrongly marked it Sent).
+- Discover off: a DM first queues a direct announce to its contact (≤ 1 per 60 s), and direct announces are now
+  also published to the contact's relay `node/<hex>` (only broadcast announces were bridged before).
+- Undecryptable DM: kept in memory (`PendingUndecryptable`, ≤ 20 × 20, TTL-bounded) and replayed when the sender's
+  announce pins its keys; the receiver asks with a signed-announce flag (`Announce.FLAG_WANTS_REPLY`, payload flags
+  byte). An interim build put that flag in bit 7 of the bundle **header** flags — that's the wire version field;
+  moved before it shipped.
+
+## M.2 Internet relay
+- Frame stays `[D7][01][4B num][wire]`; an interim 5-byte variant would have broken old ⇄ new traffic and was
+  reverted; `wrap_matchesExactGolden6ByteHeader` pins it.
+- Presence `on:<ts>:<b64 name>` only while Discover is on; the name is a fallback `announce_name` for an existing,
+  key-less contact without custom / mesh name (`ContactDao.setPresenceNameIfUnverified`). An interim build wrote it
+  to `long_name`, which `displayName()` ranks above the signed name, and created contacts from any presence.
+  **Compat:** pre-Oct-30 builds can't parse the named form and treat that peer as not online → upgrade all phones.
+- Multi-hop A → relay → B → BLE → C: `query/who_sees/<C>` / `query/reply/<A>` (`I_SEE:<C>`), carrier valid 3 min,
+  only answers to own queries. Relay-only peers get someone else's DM ONLY via such an answer: strategies no
+  longer decide for relay peers (an interim build let Epidemic copy every DM to every phone on the broker).
+
+## M.3 Routing
+- Default + Reset = **Epidemic**; the choice is saved (`routing_algorithm`) and applied by the orchestrator on
+  `start()` (service-only starts too). MaxProp: a non-next-hop peer gets a lower-priority copy when its own
+  f(peer, dest) > exploratory floor. PRoPHET: unchanged (line endings only, despite earlier notes).
+
+## M.4 UI
+- Tabs: one destination, one `HorizontalPager` (an interim build had a pager per nav destination: swipes cut off,
+  non-adjacent taps landed on the middle tab). Badges: chats with unread (same rules as the Chats list) / our own
+  Queued messages (an interim build counted the whole buffer).
+- Delete for me: chat row only; the buffer row stays (forgetting it let a still-flooding broadcast reappear).
+- Replies on the wire (`ReplyCodec`, DB v5 `reply_to_id` / `reply_snippet`, `MigrationTest.migrate4To5…`).
+- Notifications (`MessageNotifier`): banner in foreground (latest wins), tray otherwise, lock screen "New message",
+  invite keys never shown. Fixed: id `h and 0x7FFFFFFF % 10000` precedence collisions, broadcast chat key mismatch
+  (`^all` vs `__broadcast__`), name order, chat re-opened after rotation from the launch intent.
+- Wallpapers: 5 colours + doodle + gallery photo (private JPEG copy). Network: Discover card, battery-exemption
+  card. Top bar: Developer Tools icon.
+- Samsung: `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` (Play declaration text in `docs/play-store/play-console-forms.md`)
+  + short timed wake locks around relay connects / publishes only.
+
+## M.5 Open / not done
+- Device tests: Discover-off first DM, BLE ✓ → ✓✓, A → B → C over relay + BLE, swipe, notifications on Samsung.
+- Route queries and presence names are unauthenticated (bounded harm, documented); queries reveal who is sought.
+- A Delete for me of our own fragmented DM leaves its fragments sending (intended: no unsend).
+- Broadcasts from anyone notify; no per-chat mute yet.
+
+# PART N — 2026-10-31: links, Cloudflare relay, BYOT, WebRTC direct (uncommitted on `main`)
+
+Status of every feature: `docs/FEATURES.md`. Unit tests 429 → 457; debug 35.7 MB, R8 staging 21.5 MB. **Not device-tested.**
+
+- **Links:** one payload format (`dtnid:` / `dtngrp:`), as `https://<workerHost>/c#…` / `/g#…` or plain text; parser accepts
+  `dtnid://`, percent-encoding, Base64 `+`; confirm screen; shared cards never replace or verify keys. App Links host = exact
+  `dtn.workerHost` (a `*.workers.dev` wildcard can't verify).
+- **Cloudflare (`cloud/`):** Worker + SQLite Durable Object (`new_sqlite_classes`, Free plan). Relay frames stamped with the
+  socket's node id; 16 KB / 3 sockets per id. `/turn` mints Metered credentials server-side (4 h, per-node cache in DO
+  storage, only for connected nodes, rate-limited). Not deployed yet.
+- **Dual relay:** `internetPeers` = either relay; relay sends and route queries run while either is up (`anyRelayConnected`).
+- **BYOT:** per-provider encrypted slots; coturn shared-secret mode; tests verify only what they can (STUN round trip, API fetch).
+- **WebRTC:** first version was a mock ("mock-sdp-offer"), then a version where nothing ever opened a session, glare
+  replaced sessions without closing them, and ICE waited a fixed 2.5 s. Now: opened by relay DMs (`maybeConnect`),
+  perfect negotiation (unsigned ids), gathering awaited ≤ 5 s, close only on FAILED/CLOSED, 30 s stuck / 10 min idle,
+  route answers via `isPhysicallyReachable` (no WebRTC).
+- **Secrets:** hard-coded Metered key/credential removed from source (were never committed); stop-gap values in
+  `local.properties` until the Worker mints TURN, then rotate.

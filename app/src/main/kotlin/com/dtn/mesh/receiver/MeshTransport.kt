@@ -120,6 +120,13 @@ interface MeshTransport {
     fun isRadioReachable(peer: NodeId): Boolean
 
     /**
+     * Reachable over a PHYSICAL link right now (BLE, Wi-Fi Direct, our hub), excluding WebRTC.
+     * Route-query answers ("I see C") use this: a WebRTC peer is reachable over the internet
+     * anyway, so claiming it would only attract relay custody we can't add value to.
+     */
+    fun isPhysicallyReachable(peer: NodeId): Boolean = isRadioReachable(peer)
+
+    /**
      * True when a link that ends AT [peer] carries bundles to it right now: BLE, Wi-Fi Direct, or
      * the hub when [peer] is the hub. Only these prove delivery on a successful write; a phone on
      * our hub ([isHubPeer]) is two hops away and needs the end-to-end receipt.
@@ -185,6 +192,7 @@ data class InboundPacket(
 fun TransportKind?.journalLabel(): String = when (this) {
     TransportKind.BLE -> "BLE"
     TransportKind.WIFI_DIRECT -> "Wi-Fi Direct"
+    TransportKind.WEBRTC -> "WebRTC direct"
     TransportKind.HUB -> "LoRa hub"
     TransportKind.INTERNET -> "Internet relay"
     null -> "radio"

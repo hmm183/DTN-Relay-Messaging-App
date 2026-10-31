@@ -7,6 +7,7 @@ import com.dtn.mesh.ui.DtnViewModel
 import com.dtn.mesh.ui.GroupInfo
 import com.dtn.mesh.ui.PeerInfo
 import com.dtn.mesh.ui.groups.GroupInviteDm
+import com.dtn.mesh.ui.chats.ContactCardDm
 
 enum class ChatKind { BROADCAST, GROUP, DIRECT }
 
@@ -111,7 +112,7 @@ object ChatListModel {
             else -> ""
         }
         // A group invite DM shows as "Group invite · Family", never with its key.
-        return prefix + (GroupInviteDm.preview(m.text) ?: m.text.replace('\n', ' ').take(60))
+        return prefix + (ContactCardDm.preview(m.text) ?: GroupInviteDm.preview(m.text) ?: m.text.replace('\n', ' ').take(60))
     }
 
     /** Total unread over [items] (the Chats tab badge). */

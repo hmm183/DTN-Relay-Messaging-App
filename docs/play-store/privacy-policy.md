@@ -37,6 +37,16 @@ yourself (Share).
 | Message headers: message id, sender and recipient node ids, lifetime, hop count | Every phone, hub and relay that carries a message | Yes — needed to route messages |
 | Delivery receipts | Phones, hubs and the relay on the way back to the sender | Yes (message ids only) |
 | Online/offline status and time (internet relay only) | The relay broker and its other users | Yes |
+| Your display name in that online status (internet relay, only while Discover is on) | The relay broker and its other users | Yes |
+| Route questions: "which phone can reach node X over radio?" and the answers (internet relay only) | The relay broker and its other users | Yes (node ids only) — this is how messages hop from the internet to phones that only have Bluetooth |
+| Your IP addresses, during a direct internet connection (Internet direct, off by default) | Only the contact you connect to, and the TURN server in use if a direct path isn't possible | Yes — needed to connect directly; messages stay end-to-end encrypted |
+| Connection-setup messages for Internet direct | The relay broker and the Cloudflare relay | No — encrypted to the contact; only who is contacting whom is visible |
+
+**Second relay and TURN (optional).** When the build includes the DTN Mesh Cloudflare Worker, the
+app also connects to it (operated on Cloudflare, Inc.'s network) alongside the broker; it sees the
+same kind of data as the broker. For Internet direct the app may use a TURN server: the DTN Mesh
+default (Metered, Inc.) or one you configure; it relays encrypted traffic and sees IP addresses.
+Your own TURN credentials stay on your phone.
 
 **Internet relay (optional, off until you turn it on).** By default it uses the public MQTT broker
 `broker.hivemq.com`, operated by HiveMQ GmbH, which is shared by everyone who uses it. The broker sees
@@ -52,7 +62,12 @@ own broker in Settings. HiveMQ's handling of connection data is covered by its o
 - **Location (Android 12 and older only)** — those Android versions require it for Bluetooth / Wi-Fi
   scans. The app never reads or stores your location.
 - **Camera** — scan contact and group QR codes (optional; codes can also be loaded from an image).
-- **Notifications** — the "relay running" notification while the app keeps links alive.
+- **Notifications** — the "relay running" notification while the app keeps links alive, and new
+  message notifications (the lock screen shows only "New message" unless you allow sensitive content).
+- **Photos (only if you pick one)** — a chat wallpaper. The system photo picker gives the app only the
+  photo you choose; a downscaled copy is stored inside the app and never sent anywhere.
+- **Battery optimisation exemption (optional)** — the app asks once so the relay keeps carrying
+  messages with the screen off. Wake locks are held only for a few seconds around relay connections.
 - **Internet** — the optional internet relay.
 
 ## Retention

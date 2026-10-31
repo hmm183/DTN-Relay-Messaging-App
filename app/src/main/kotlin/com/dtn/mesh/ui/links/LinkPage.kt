@@ -98,6 +98,7 @@ internal fun TransportKind.pageTitle(): String = when (this) {
     TransportKind.WIFI_DIRECT -> "Wi-Fi Direct"
     TransportKind.HUB -> "LoRa hub"
     TransportKind.INTERNET -> "Internet relay"
+    TransportKind.WEBRTC -> "WebRTC direct"
 }
 
 /** One read-only fact on a link page or the Relay Configuration page. */
@@ -159,6 +160,7 @@ fun LinkPage(
                 } else null
                 item(key = "status") { StateCard(kind, chip, info, times, wanted, supported, viewModel, relayText) }
                 when (kind) {
+                    TransportKind.WEBRTC -> { /* no dedicated link page */ }
                     TransportKind.BLE -> item(key = "devices") {
                         PeopleCard("Nearby devices", info.peers, byId, onOpenContact, emptyText =
                             if (wanted) "No DTN phones in Bluetooth range right now." else "Bluetooth is off for the mesh. Switch it on to find nearby phones.") { p, peer ->
@@ -535,6 +537,7 @@ private fun FactsCard(kind: TransportKind, info: LinkInfo, viewModel: DtnViewMod
             Fact("Store and forward", "The hub keeps bundles for phones that aren't connected and floods them over LoRa to other hubs."),
         )
         TransportKind.INTERNET -> relayConnectionFacts()
+        TransportKind.WEBRTC -> emptyList()
     }
     SectionHeader("How it works")
     DtnCard(contentPadding = PaddingValues(vertical = 4.dp)) {
@@ -555,4 +558,5 @@ private fun TransportKind.note(supported: Boolean): String = when (this) {
         "Android may ask you to confirm the first time."
     TransportKind.INTERNET -> "When this is useful: a contact is far away and both phones have internet. Nearby phones and " +
         "LoRa hubs work without it, and messages stay end-to-end encrypted."
+    TransportKind.WEBRTC -> "Direct phone-to-phone WebRTC data channel."
 }

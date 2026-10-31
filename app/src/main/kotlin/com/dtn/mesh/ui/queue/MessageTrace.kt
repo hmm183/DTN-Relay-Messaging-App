@@ -182,7 +182,7 @@ internal object MessageTrace {
             state = state,
             explanation = explanation(state, outgoing, isMultiParty, route, events, sentAt, deliveredAt, names, time, chat?.group),
             // A group invite DM: its name only (the key stays in the chat's Join card).
-            text = chat?.text?.let { GroupInviteDm.preview(it) ?: it },
+            text = chat?.text?.let { com.dtn.mesh.ui.chats.ContactCardDm.preview(it) ?: GroupInviteDm.preview(it) ?: it },
             contentNote = when {
                 chat != null -> null
                 carriedDm -> "Encrypted for the recipient — this phone only carries it."

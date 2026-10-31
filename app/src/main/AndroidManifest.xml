@@ -47,6 +47,11 @@
 
     <!-- WorkManager scheduling (exact alarms not required — periodic is sufficient) -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Short timed wake locks around relay connects / publishes (WakeLocks), and the one-tap
+         battery-optimisation exemption request (BatteryOptimization): a store-and-forward relay
+         must stay reachable in the background, which Doze / Samsung sleeping apps prevent. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Research export writes to the app-specific external files dir, which needs no storage
          permission on any supported API level. -->
@@ -71,6 +76,29 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Deep link schemes: dtnid: and dtngrp: -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="dtnid" />
+                <data android:scheme="dtngrp" />
+            </intent-filter>
+
+            <!-- App Links: Cloudflare Workers /c and /g -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <!-- One exact host (dtn.workerHost, see app/build.gradle.kts): a "*.workers.dev"
+                     wildcard can't verify (Android would fetch assetlinks.json from workers.dev
+                     itself) and would claim every Worker's /c… links on the phone. -->
+                <data android:scheme="https" />
+                <data android:host="${workerHost}" />
+                <data android:path="/c" />
+                <data android:path="/g" />
             </intent-filter>
         </activity>
 

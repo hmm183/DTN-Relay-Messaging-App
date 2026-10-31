@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -37,6 +38,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.dtn.mesh.ui.chats.chatWallpaper
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
@@ -89,6 +93,7 @@ fun SettingsPage(
     onOpenIdentity: () -> Unit,
     onOpenGroups: () -> Unit,
     onOpenRelay: () -> Unit,
+    onOpenTurn: () -> Unit = {},
     onOpenContact: (String) -> Unit,
 ) {
     val snackbars = remember { SnackbarHostState() }
@@ -148,8 +153,8 @@ fun SettingsPage(
             val wanted = status.isWanted(TransportKind.INTERNET)
             // The same state model as the Network tile, the relay page and Relay Configuration.
             val relayText = relayStatusText(relay, relayPeers.size, relayNow)
-            val relayLine = if (relay == RelayStatus.Off) "Off · reach contacts anywhere over MQTT when both phones have internet"
-            else relayText.title
+            val dualRelaySub by viewModel.dualRelaySubtitle.collectAsState()
+            val relayLine = dualRelaySub
             DtnCard(contentPadding = PaddingValues(vertical = 4.dp)) {
                 SettingRow("Internet relay", icon = DtnIcons.Internet, subtitle = relayLine, checked = wanted,
                     onCheckedChange = { viewModel.setInternetRelay(it) })
@@ -158,6 +163,22 @@ fun SettingsPage(
                         modifier = Modifier.padding(start = 64.dp, end = 12.dp, bottom = 8.dp))
                 }
                 SettingRow("Relay server", icon = DtnIcons.Settings, subtitle = broker, onClick = onOpenRelay)
+                val turnType by viewModel.turnProviderType.collectAsState()
+                val turnSummary = when (turnType) {
+                    "METERED" -> "Metered.ca (BYOT)"
+                    "COTURN" -> "Self-hosted coturn (BYOT)"
+                    "CUSTOM_JSON" -> "Custom JSON (BYOT)"
+                    else -> "Default (Shared Metered)"
+                }
+                SettingRow("TURN server (BYOT)", icon = DtnIcons.Broadcast, subtitle = turnSummary, onClick = onOpenTurn)
+                val internetDirect by viewModel.internetDirectEnabled.collectAsState()
+                SettingRow(
+                    "Internet direct (experimental)",
+                    icon = DtnIcons.Broadcast,
+                    subtitle = "Direct phone-to-phone WebRTC data channels between online contacts",
+                    checked = internetDirect,
+                    onCheckedChange = { viewModel.setInternetDirect(it) }
+                )
             }
 
             SectionHeader("Privacy")
@@ -177,6 +198,9 @@ fun SettingsPage(
                     BlockedRow(nameOf(id), id, onOpen = { onOpenContact(id) }, onUnblock = { unblockId = id })
                 }
             }
+
+            SectionHeader("Chat Appearance")
+            ChatWallpaperCard(viewModel)
 
             SectionHeader("Groups")
             DtnCard(contentPadding = PaddingValues(vertical = 4.dp)) {
@@ -342,3 +366,69 @@ private fun DisplayNameDialog(current: String, onDismiss: () -> Unit, onSave: (S
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
+
+/** Settings › Chat Appearance: solid colours, the doodle pattern, or a photo from the gallery. */
+@Composable
+private fun ChatWallpaperCard(viewModel: DtnViewModel) {
+    val theme by viewModel.chatTheme.collectAsState()
+    val photoPath by viewModel.chatWallpaperPath.collectAsState()
+    val pickPhoto = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> if (uri != null) viewModel.setChatWallpaperPhoto(uri) }
+
+    @Composable
+    fun Option(key: String, label: String, swatch: @Composable () -> Unit, onClick: () -> Unit) {
+        val selected = theme == key
+        Row(
+            modifier = Modifier.fillMaxWidth().clip(DtnShapes.Button).clickable(onClick = onClick)
+                .padding(vertical = 8.dp, horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(28.dp).clip(RoundedCornerShape(6.dp))) { swatch() }
+            Spacer(Modifier.width(12.dp))
+            Text(label, style = DtnType.RowSubtitle, color = if (selected) DtnColors.Primary else DtnColors.TextTitle,
+                modifier = Modifier.weight(1f))
+            if (selected) Icon(DtnIcons.Check, contentDescription = "Selected", tint = DtnColors.Primary, modifier = Modifier.size(18.dp))
+        }
+    }
+
+    DtnCard(contentPadding = PaddingValues(12.dp)) {
+        Text("Chat wallpaper", style = DtnType.RowTitle)
+        Spacer(Modifier.height(4.dp))
+        Text("Background of every conversation", style = DtnType.RowSubtitle)
+        Spacer(Modifier.height(10.dp))
+        com.dtn.mesh.ui.chats.ChatWallpapers.solids.forEach { p ->
+            Option(p.key, p.label, swatch = { Box(Modifier.fillMaxSize().background(p.color)) }) { viewModel.setChatTheme(p.key) }
+        }
+        Option(com.dtn.mesh.ui.chats.ChatWallpapers.DOODLE, "Doodle pattern", swatch = {
+            Box(Modifier.fillMaxSize().then(Modifier.chatWallpaperSwatch(com.dtn.mesh.ui.chats.ChatWallpapers.DOODLE)))
+        }) { viewModel.setChatTheme(com.dtn.mesh.ui.chats.ChatWallpapers.DOODLE) }
+        val photo = com.dtn.mesh.ui.chats.rememberWallpaperPhoto(photoPath)
+        Option(
+            com.dtn.mesh.ui.chats.ChatWallpapers.PHOTO,
+            when {
+                photoPath == null -> "Photo from gallery…"
+                theme == com.dtn.mesh.ui.chats.ChatWallpapers.PHOTO -> "Photo from gallery (tap to change)"
+                else -> "Photo from gallery"
+            },
+            swatch = {
+                Box(Modifier.fillMaxSize().then(Modifier.chatWallpaperSwatch(com.dtn.mesh.ui.chats.ChatWallpapers.PHOTO, photo)))
+            },
+        ) {
+            // A photo already saved is selected first; once selected, a tap picks a new one.
+            if (photoPath != null && theme != com.dtn.mesh.ui.chats.ChatWallpapers.PHOTO) {
+                viewModel.setChatTheme(com.dtn.mesh.ui.chats.ChatWallpapers.PHOTO)
+                return@Option
+            }
+            pickPhoto.launch(
+                androidx.activity.result.PickVisualMediaRequest(
+                    androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly,
+                ),
+            )
+        }
+    }
+}
+
+/** The same drawing as the chat itself, at swatch size. */
+private fun Modifier.chatWallpaperSwatch(theme: String, photo: androidx.compose.ui.graphics.ImageBitmap? = null): Modifier =
+    chatWallpaper(theme, photo)

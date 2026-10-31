@@ -117,6 +117,9 @@ object DtnIcons {
     val Image: ImageVector by lazy {
         icon("Image", "M21,19V5c0,-1.1 -0.9,-2 -2,-2H5c-1.1,0 -2,0.9 -2,2v14c0,1.1 0.9,2 2,2h14c1.1,0 2,-0.9 2,-2zM8.5,13.5l2.5,3.01L14.5,12l4.5,6H5l3.5,-4.5z")
     }
+    val Reply: ImageVector by lazy {
+        icon("Reply", "M10,9V5l-7,7 7,7v-4.1c5,0 8.5,1.6 11,5.1 -1,-5 -4,-10 -11,-11z")
+    }
     val Storage: ImageVector by lazy {
         icon("Storage", "M2,20h20v-4H2v4zM4,17h2v2H4v-2zM2,4v4h20V4H2zM6,7H4V5h2v2zM2,14h20v-4H2v4zM4,11h2v2H4v-2z")
     }
@@ -135,6 +138,6 @@ object DtnIcons {
             Network, Chats, Queue, Peers, Groups, Settings, Bluetooth, WifiDirect, LoraHub, Internet,
             ChevronRight, ArrowBack, Close, Info, Warning, Search, DevTools, MoreVert,
             Edit, Send, PersonAdd, Refresh, Copy, QrCode, Check, Block, Delete, Broadcast, Lock, Schedule,
-            Add, Person, Share, Image, Storage, Leave, EventLog, BarChart, Download,
+            Add, Person, Share, Image, Storage, Leave, Reply, EventLog, BarChart, Download,
         )
 }

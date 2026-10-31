@@ -222,6 +222,18 @@ interface ContactDao {
     """)
     suspend fun updateKeys(nodeId: String, xPub: ByteArray?, edPub: ByteArray?, name: String?, nowMs: Long)
 
+    /**
+     * Fallback label from an (unauthenticated) relay presence record. Only for a contact whose
+     * keys were never pinned and that has no custom or mesh name: the first signed announce
+     * ([updateKeys]) overwrites `announce_name`, so this can never shadow a verified name.
+     */
+    @Query("""
+        UPDATE contacts SET announce_name = :name
+        WHERE node_id = :nodeId AND x_pub IS NULL
+            AND (custom_name IS NULL OR custom_name = '') AND (long_name IS NULL OR long_name = '')
+    """)
+    suspend fun setPresenceNameIfUnverified(nodeId: String, name: String)
+
     /** Mark a contact's keys as user-verified (safety number / QR), or clear verification. */
     @Query("UPDATE contacts SET key_verified = :verified WHERE node_id = :nodeId")
     suspend fun setKeyVerified(nodeId: String, verified: Boolean)

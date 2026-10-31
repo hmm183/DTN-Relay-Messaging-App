@@ -57,6 +57,8 @@ fun MessageStatusSheet(
     onCopy: () -> Unit,
     onFullTrace: () -> Unit,
     onDismiss: () -> Unit,
+    onReply: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
     memberName: (String) -> String = { it },
 ) {
     val state = msg.state
@@ -99,7 +101,13 @@ fun MessageStatusSheet(
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlineButton("Copy text", onClick = onCopy, modifier = Modifier.weight(1f))
+                if (onReply != null) {
+                    OutlineButton("Reply", onClick = onReply, modifier = Modifier.weight(1f))
+                }
+                OutlineButton("Copy", onClick = onCopy, modifier = Modifier.weight(1f))
+                if (onDelete != null) {
+                    OutlineButton("Delete", onClick = onDelete, modifier = Modifier.weight(1f))
+                }
             }
             DtnCard(contentPadding = PaddingValues(vertical = 4.dp)) {
                 SettingRow("Full trace in Developer Tools", icon = DtnIcons.DevTools,

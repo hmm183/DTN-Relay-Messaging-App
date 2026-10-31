@@ -48,6 +48,7 @@ fun transportChip(
         TransportKind.WIFI_DIRECT -> "Wi-Fi Direct"
         TransportKind.HUB -> "LoRa hub"
         TransportKind.INTERNET -> "Internet"
+        TransportKind.WEBRTC -> "WebRTC"
     }
     fun chip(h: LinkHealth, d: String) = TransportChipModel(kind, label, h, d)
     fun phones(n: Int) = if (n == 1) "1 phone" else "$n phones"
@@ -68,6 +69,7 @@ fun transportChip(
             state == MeshConnectionState.CONNECTING -> chip(LinkHealth.BUSY, "Searching for phones to link")
             else -> chip(LinkHealth.PROBLEM, "Unavailable · retry")
         }
+        TransportKind.WEBRTC -> chip(if (state == MeshConnectionState.CONNECTED) LinkHealth.ON else LinkHealth.OFF, if (state == MeshConnectionState.CONNECTED) "Active" else "Off")
         TransportKind.HUB -> when {
             !radios.wifiOn -> chip(LinkHealth.PROBLEM, "Wi-Fi off")
             state == MeshConnectionState.CONNECTED -> chip(LinkHealth.ON, if (n > 0) "Connected · ${phones(n)}" else "Connected")

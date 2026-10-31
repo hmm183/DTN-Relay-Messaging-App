@@ -24,7 +24,17 @@ value class NodeId(val value: String) {
          */
         fun fromNodeNum(num: Int): NodeId =
             if (num == BROADCAST_NODE_NUM32) BROADCAST else NodeId("!%08x".format(num))
+
+        /** Format Discord-style handle e.g. "Alice#769a". */
+        fun discordHandle(displayName: String, nodeId: String): String {
+            val shortTag = nodeId.removePrefix("!").takeLast(4).lowercase()
+            val name = displayName.ifBlank { "User" }
+            return "$name#$shortTag"
+        }
     }
+
+    /** 4-hex character suffix for discord-style handles. */
+    val tag: String get() = value.removePrefix("!").takeLast(4).lowercase()
 
     /** Extract the numeric node number, or null if this is a special ID (^all, ^local). */
     fun toNodeNum(): Int? {

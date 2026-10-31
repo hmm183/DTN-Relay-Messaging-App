@@ -1,7 +1,7 @@
 package com.dtn.mesh.receiver
 
 /** The four independently controllable transports, in send-priority order. */
-enum class TransportKind { BLE, WIFI_DIRECT, HUB, INTERNET }
+enum class TransportKind { BLE, WIFI_DIRECT, WEBRTC, HUB, INTERNET }
 
 /**
  * The link that actually carried one bundle. [HUB] = handed to the hub that is itself the target;
@@ -11,6 +11,7 @@ enum class TransportKind { BLE, WIFI_DIRECT, HUB, INTERNET }
 enum class SendPath(val label: String, val reachesTargetDirectly: Boolean) {
     BLE("BLE", true),
     WIFI_DIRECT("Wi-Fi Direct", true),
+    WEBRTC("WebRTC direct", true),
     HUB("LoRa hub", true),
     /**
      * Handed to our hub for a phone registered at the same hub: the hub passes it straight on,
@@ -76,6 +77,7 @@ data class LinkInfo(
 data class TransportStatus(
     val ble: MeshConnectionState = MeshConnectionState.DISCONNECTED,
     val wifiDirect: MeshConnectionState = MeshConnectionState.DISCONNECTED,
+    val webrtc: MeshConnectionState = MeshConnectionState.DISCONNECTED,
     val hub: MeshConnectionState = MeshConnectionState.DISCONNECTED,
     val internet: MeshConnectionState = MeshConnectionState.DISCONNECTED,
     val wanted: Set<TransportKind> = emptySet(),
@@ -83,6 +85,7 @@ data class TransportStatus(
     fun stateOf(kind: TransportKind): MeshConnectionState = when (kind) {
         TransportKind.BLE -> ble
         TransportKind.WIFI_DIRECT -> wifiDirect
+        TransportKind.WEBRTC -> webrtc
         TransportKind.HUB -> hub
         TransportKind.INTERNET -> internet
     }

@@ -16,6 +16,22 @@ val uploadKey = Properties().apply {
 }
 val hasUploadKey = listOf("storeFile", "storePassword", "keyAlias", "keyPassword").all { !uploadKey.getProperty(it).isNullOrBlank() }
 
+// Deployment-specific values (never committed): read from the git-ignored local.properties, or
+// from Gradle properties / environment variables in CI. All optional; empty disables the feature.
+//   dtn.workerHost            e.g. dtnmesh.<account>.workers.dev (Cloudflare relay + App Links)
+//   dtn.defaultTurnDomain     e.g. <app>.metered.live (DTN Mesh's shared fallback TURN)
+//   dtn.defaultTurnApiKey     Metered credential-fetch API key for that app
+//   dtn.defaultTurnUsername / dtn.defaultTurnCredential   optional static fallback credential
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun deployValue(key: String): String =
+    (localProps.getProperty(key) ?: (project.findProperty(key) as String?)
+        ?: System.getenv(key.uppercase().replace('.', '_')) ?: "").trim()
+fun quoted(v: String) = "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+val workerHost = deployValue("dtn.workerHost")
+
 android {
     namespace = "com.dtn.mesh"
     // Google Play requires new apps and updates to target Android 16 (API 36) since 31 Aug 2026.
@@ -29,6 +45,20 @@ android {
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
+        }
+
+
+        buildConfigField("String", "WORKER_HOST", quoted(workerHost))
+        buildConfigField("String", "DEFAULT_TURN_DOMAIN", quoted(deployValue("dtn.defaultTurnDomain")))
+        buildConfigField("String", "DEFAULT_TURN_API_KEY", quoted(deployValue("dtn.defaultTurnApiKey")))
+        buildConfigField("String", "DEFAULT_TURN_USERNAME", quoted(deployValue("dtn.defaultTurnUsername")))
+        buildConfigField("String", "DEFAULT_TURN_CREDENTIAL", quoted(deployValue("dtn.defaultTurnCredential")))
+        // The App Links intent filter needs one exact host (a *.workers.dev wildcard can't be
+        // verified: Android would look for assetlinks.json on workers.dev itself). ".invalid" is
+        // reserved and never resolves, so without a configured host the filter simply never verifies.
+        manifestPlaceholders["workerHost"] = workerHost.ifBlank { "dtnmesh.invalid" }
     }
 
     signingConfigs {
@@ -129,6 +159,7 @@ dependencies {
     // Serialization (for research export)
     implementation(libs.kotlinx.serialization.json)
 
+    implementation(libs.stream.webrtc.android)
     // Cryptography: X25519 / Ed25519 / HKDF (pure-Java, works on API 26+)
     implementation(libs.bouncycastle)
 
@@ -136,8 +167,9 @@ dependencies {
     implementation(libs.zxing.core)
     implementation(libs.zxing.embedded)
 
-    // Internet transport (MQTT relay)
+    // Internet transport (MQTT relay & Cloudflare Worker WebSocket)
     implementation(libs.hivemq.mqtt)
+    implementation(libs.okhttp)
 
     // Settings persistence
     implementation(libs.datastore.preferences)
@@ -146,6 +178,7 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.room.testing)
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.test.ext)
     androidTestImplementation(libs.androidx.test.espresso)
     androidTestImplementation(libs.room.testing)

@@ -20,6 +20,11 @@ the sender's own path cost to nodes further away (distance vectors) and nothing 
 copied into a phone's own f-table. The per-bundle carrier rules are pure in `service/CarrierRules.kt`
 (`sendToSingle` and the Q-learning pass call them); `routing/MeshSim` + `MultiHopRoutingTest` run them
 with one real strategy set per simulated phone (A → B → C → D → E, candidates F / G / H).
+Default algorithm: Epidemic (saved). MaxProp (Oct 2026): when Dijkstra's next hop is another peer, the
+evaluated peer still gets a lower-priority copy if its own reported f(peer, dest) is above the
+exploratory floor (`f / (1 + cost)`), so one walking-away next hop no longer starves the bundle.
+Relay-only peers never get another phone's DM from a strategy: only a route-query answer ("I see C
+over radio", see wire-protocol.md › internet relay) makes one a carrier (A → relay → B → BLE → C).
 
 ## Layout
 - `app/` — Android app, package `com.dtn.mesh`, Kotlin + Compose + Hilt + Room + WorkManager.
@@ -41,8 +46,10 @@ with one real strategy set per simulated phone (A → B → C → D → E, candi
   - `service/DiagnosticsLog.kt` — the app's diagnostics log; `export/` — `DataExportManager` +
     `ExportModel` (Export Data), `ResearchExporter` (the CSV / JSON).
   - `routing/`, `learning/` — strategies + Q-learning (`BenchmarkTracker`). `database/` — Room.
-  - `ui/` — Compose, Navigation Compose 2.8.5. `shell/DtnApp.kt` = one NavHost: tabs Network (start) ·
-    Chats · Queue · Peers, then `chat/{key}`, `contact/{node}`, `message/{id}`, `queued/{id}`, `groups`,
+  - `ui/` — Compose, Navigation Compose 2.8.5. `shell/DtnApp.kt` = one NavHost: the `tabs` destination
+    (ONE `TabScaffold` with ONE `HorizontalPager`: Network (start) · Chats · Queue · Peers; swipe and the
+    bottom nav only move the pager, never the back stack; Back on another tab → Network; badges = chats
+    with unread / our own Queued messages), then `chat/{key}`, `contact/{node}`, `message/{id}`, `queued/{id}`, `groups`,
     `group/{channel}`, `groups/new`, `identity`, `settings`, `relay`, `transport/{kind}`, `dev`, `dev/{page}`
     and the Connection links sheet. Packages: `theme` (DtnTheme / DtnColors / DtnType, bundled `DtnIcons`),
     `components` (shared cards, rows, chips, buttons — reuse them), `network`, `chats`, `queue`, `peers`,
@@ -83,9 +90,14 @@ with one real strategy set per simulated phone (A → B → C → D → E, candi
 - Encryption is end-to-end: encrypt at the origin, decrypt only at the destination. Relays,
   hubs and the internet relay must stay payload-agnostic (header-only routing).
 - TTL is relative minutes and must only ever count DOWN across hops; never refresh it.
-- "Delivered" only from a link that reaches the destination itself (BLE, Wi-Fi Direct, hub as
-  target) or an end-to-end receipt — never from a relay PUBACK, a hub flood, or a hand-off to a
-  phone on the same hub (`SendPath.HUB_LOCAL`).
+- "Delivered" (✓✓) on a DM only from the destination's end-to-end receipt (ROUTING_ACK). Since Oct
+  2026 a successful direct BLE / Wi-Fi Direct write to the destination is only **Sent** (✓,
+  `ChatDao.markSentIfSending`: SENDING / BUFFERED → SENT, never downgrading Delivered): the receiver
+  may still be unable to decrypt it. A relay PUBACK, a hub flood or a hand-off to a phone on the
+  same hub (`SendPath.HUB_LOCAL`) never changes the status (stays Queued until the receipt).
+- Delete for me (`ChatDao.deleteMessage`): removes only this phone's chat row. The buffer row is
+  kept on purpose — it dedups later copies (a forgotten broadcast would be re-accepted and re-shown),
+  carried copies keep travelling, and our own pending DM is still delivered (no unsend).
 - The "N queued" counters, the Queue's Pending / Forwarded / Delivered / History segments and Buffer
   History show only DMs. Broadcasts and group messages (`^all`) spread until their TTL and are listed
   only in the Queue's **Broadcasts & groups** segment (TTL left, phones reached). Control traffic
@@ -158,12 +170,46 @@ with one real strategy set per simulated phone (A → B → C → D → E, candi
   one "Received via / Delivered via / Sent via BLE · Wi-Fi Direct · LoRa hub (hub A9B0) · Internet relay"
   line (`chats/TravelText.kt`, from `RouteRecord`), Copy text, and "Full trace in Developer Tools" → the
   Message page (also opened from the Queue, Event Log, Buffer History and Routing Engine).
-- The algorithm switch exists only in Developer Tools › Routing & Tuning (applies at once, not saved:
-  the app starts on PRoPHET; Reset = PRoPHET, λ 0.50, η 0.20; λ / η are saved). The Network status card
-  shows the active algorithm read-only. Settings that would break the mesh are read-only facts.
+- The algorithm switch exists only in Developer Tools › Routing & Tuning (applies at once and is saved,
+  DataStore `routing_algorithm`, default **Epidemic**; the orchestrator applies the saved value on
+  `start()`, so it holds when the service starts without the UI; Reset = Epidemic, λ 0.50, η 0.20).
+  Developer Tools also has a top-bar shortcut. The Network status card shows the active algorithm
+  read-only. Settings that would break the mesh are read-only facts.
+- Notifications (`service/MessageNotifier.kt`, called from `persistInboundChat`): nothing for the chat
+  that is open; an in-app banner (latest wins, 3.5 s) while the app is in the foreground; otherwise a
+  tray notification per chat (`dtn_messages_channel`, lock screen shows only "New message", tap opens
+  the chat). Names follow `PeerInfo.displayName()`; a group invite DM shows "Group invite · name",
+  never its key. Broadcast messages are stored under `NodeId.BROADCAST` but the UI chat key is
+  `BROADCAST_CHAT_ID`: the notifier maps it.
+- Chat wallpaper (`chats/ChatWallpaper.kt`, Settings › Chat Appearance): 5 solid colours, a drawn
+  doodle pattern, or a gallery photo copied (≤ 1600 px JPEG) into `filesDir` (DataStore
+  `chat_theme` / `chat_wallpaper_path`), drawn with a 45 % dark scrim.
+- WebRTC direct (`receiver/webrtc/WebRtcTransportAdapter.kt`, Settings › Internet direct, off by
+  default; `io.getstream:stream-webrtc-android`, arm64-v8a + armeabi-v7a, R8 keep rules): opened
+  only by a DM to an added contact over the relay (`MultiTransportManager` → `maybeConnect`, 1/min
+  per contact, not with battery saver), ≤ 4 sessions (LRU), 10 min idle / 30 s stuck close. A
+  verified session is a direct link: `TransportKind.WEBRTC`, `SendPath.WEBRTC` in `DIRECT_TIER`
+  (after BLE / Wi-Fi Direct, before hub / relay), so custody, summaries and encounters work as on
+  BLE; Sent on write, Delivered on receipt. `isRadioReachable` includes it; `isPhysicallyReachable`
+  (route-query answers) does not. Native-library failure turns the setting off.
+- TURN (`receiver/webrtc/TurnConfigManager.kt`, Settings › TURN server): each phone builds its
+  RTCPeerConnection from its OWN provider (Default = Worker `/turn`, then the build's stop-gap
+  Metered key, then public STUN; Metered; coturn static or shared-secret; JSON). Per-provider
+  Keystore-encrypted slots, never in signaling. Falling back to the default is shown on the page.
+- Build values (`app/build.gradle.kts`, from git-ignored `local.properties`): `dtn.workerHost`
+  (Worker relay, App Links host, share links; empty = off), `dtn.defaultTurn*` (stop-gap only).
+- Links (`crypto/DeepLinkParser.kt`, `crypto/LinkGenerator.kt`): one payload format (`dtnid:` /
+  `dtngrp:`), carried as `https://<workerHost>/c#…` / `/g#…` or plain text; incoming links always go
+  through a confirm screen; a shared contact never replaces or verifies keys
+  (`ContactKeyManager.applySharedContactKeys`). Cloudflare side: `cloud/` (see its README).
+- Feature status: `docs/FEATURES.md`.
+- Background (Samsung / Doze): Network shows a "Keep running in the background" card while the app is
+  battery-optimised (`BatteryOptimization`, permission `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`); relay
+  connect attempts and publishes hold short timed wake locks (`WakeLocks`, never a session-long lock).
 - Chat list = contacts with `is_added` (QR, Add, a DM either way); other announced phones are under
-  Peers › Nearby devices › Discovered. Discover (broadcast announces) is off by default. DB is v4
-  (`AutoMigration 3→4`, instrumented `MigrationTest` under `app/src/androidTest`:
+  Peers › Nearby devices › Discovered. Discover (broadcast announces) is off by default (toggle in
+  Settings and on the Network page). DB is v5 (`AutoMigration 3→4`, `4→5` = `chat_messages.reply_to_id`
+  / `reply_snippet`; instrumented `MigrationTest` under `app/src/androidTest`:
   `./gradlew.bat :app:connectedDebugAndroidTest`; it uninstalls the app, wiping its data).
   Unread times, blocked / deleted contacts and key-change state are DataStore (`SettingsRepository`), not Room.
 - Delete contact: the chat is deleted, `is_added = 0` and our queued direct announces to them are

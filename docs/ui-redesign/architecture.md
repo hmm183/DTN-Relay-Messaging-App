@@ -173,7 +173,7 @@ Both are available from the Contact page, the chat ⋮ menu, and the ⋮ menus i
 | Event Log | Search (new), filters All / Flow / Delivery / ACK / Issues, coloured cards → Message page, Export events | Lifecycle tab |
 | Routing Engine | Encounters, per-algorithm calculations, per-peer score table, network summary | Log + Network tabs |
 | Buffer History | → Message page | Lifecycle tab |
-| Routing & Tuning | **The only algorithm switch**: 6 cards, λ / η sliders, Benchmarks ›, Reset to defaults (PRoPHET, λ 0.50, η 0.20), Save / Cancel, formulas and constants. The choice resets on restart; λ / η are saved | Network tab + Settings |
+| Routing & Tuning | **The only algorithm switch**: 6 cards, λ / η sliders, Benchmarks ›, Reset to defaults (Epidemic, λ 0.50, η 0.20), Save / Cancel, formulas and constants. The choice, λ and η are saved (Oct 2026; the choice used to reset to PRoPHET on restart). Also reachable from the top-bar Developer Tools icon | Network tab + Settings |
 | Benchmarks | Per algorithm: deliveries, average delay, overhead, hops, **delivery rate** (new "messages handled" counter), bar chart. "Need more data" note. Reset | Network tab |
 | Export Data | Dataset switches, date range, Generate, history + Share, **Export all logs** (section 8) | Log tab |
 | Console | Diagnostics log: All / Warnings / Errors with counts, **Source filter** (the mockup's Filter button), search, Copy output, Clear view (screen only) | Log tab |

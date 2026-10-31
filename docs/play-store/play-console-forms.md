@@ -10,7 +10,8 @@ end-to-end encrypted so only the sender and recipient can read it doesn't need t
 
 | Data type | Collected | Shared | Optional? | Purpose | Why |
 |---|---|---|---|---|---|
-| Personal info → Name | Yes | No | Optional | App functionality | The display name (if set) is sent in the signed announce |
+| Personal info → Name | Yes | No | Optional | App functionality | The display name (if set) is sent in the signed announce, and (internet relay, Discover on) in the retained online-status record on the broker |
+| Photos | No | No | Optional | App personalisation | A chat wallpaper picked with the system photo picker is copied (downscaled) into app storage only; never transmitted, so not "collected" |
 | Messages → Other in-app messages | Yes | No | Optional | App functionality | Public broadcasts aren't encrypted. DMs and group messages are E2E encrypted and excluded |
 | Device or other IDs | Yes | No | Required | App functionality | The node id is a hash of Android's app-scoped device id (`ANDROID_ID`) and the package name: it persists until a factory reset (also across data clears and reinstalls). With the public keys it is this phone's address, sent to nearby phones, LoRa hubs and the relay in every message header and announce |
 
@@ -65,6 +66,20 @@ messaging, and child audiences bring the Families policy requirements.
 None of the special-access permissions that need a Console declaration are used (no SMS/Call log, no
 background location, no QUERY_ALL_PACKAGES, no exact alarms, no accessibility). Location is requested
 only on Android 12L and older, for Bluetooth / Wi-Fi scanning, and is capped with `maxSdkVersion=32`.
+
+**`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` (Oct 2026)** is declared. Google Play only allows it when
+the app's core function breaks under Doze; be ready to justify it, e.g.:
+
+> DTN Mesh Relay is a store-and-forward messenger: phones carry encrypted messages for each other and
+> keep an MQTT relay session open. Under Doze / Samsung "sleeping apps" the relay connection is cut and
+> the phone stops receiving and carrying messages until it is opened. The app asks for the exemption
+> once, from a card on its Network screen, and works (with delays) if the user declines.
+
+If the review rejects it: remove the permission AND make `BatteryOptimization.requestExemption`
+open the system's battery-optimisation list (`ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS`, no
+permission needed) directly. Its current fallback to that list only triggers on an exception, and
+without the permission the direct request may just close without one. `WAKE_LOCK` (short timed locks around relay connects / publishes) needs no
+declaration.
 
 ## Other declarations
 

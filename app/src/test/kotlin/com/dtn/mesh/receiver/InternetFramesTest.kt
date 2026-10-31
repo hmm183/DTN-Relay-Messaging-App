@@ -20,6 +20,24 @@ class InternetFramesTest {
     }
 
     @Test
+    fun wrap_matchesExactGolden6ByteHeader() {
+        val publisherNum = 0x12345678
+        val wire = byteArrayOf(0xAA.toByte(), 0xBB.toByte(), 0xCC.toByte())
+        val framed = InternetFrames.wrap(publisherNum, wire)
+
+        assertEquals(9, framed.size)
+        assertEquals(0xD7.toByte(), framed[0])
+        assertEquals(1.toByte(), framed[1])
+        assertEquals(0x12.toByte(), framed[2])
+        assertEquals(0x34.toByte(), framed[3])
+        assertEquals(0x56.toByte(), framed[4])
+        assertEquals(0x78.toByte(), framed[5])
+        assertEquals(0xAA.toByte(), framed[6])
+        assertEquals(0xBB.toByte(), framed[7])
+        assertEquals(0xCC.toByte(), framed[8])
+    }
+
+    @Test
     fun unwrap_passesRawPayloadsThrough() {
         val raw = ByteArray(40) { 0x11 }
         val u = InternetFrames.unwrap(raw)
@@ -27,6 +45,12 @@ class InternetFramesTest {
         assertArrayEquals(raw, u.wire)
     }
 
+
+    @Test
+    fun presence_encodeDecode_withName() {
+        val s = Presence.decode(Presence.encode(true, 1_700_000_000L, "Alice"))
+        assertEquals(Presence.Status(true, 1_700_000_000L, "Alice"), s)
+    }
     @Test
     fun presence_encodeDecode() {
         assertEquals(Presence.Status(true, 1_700_000_000L), Presence.decode(Presence.encode(true, 1_700_000_000L)))

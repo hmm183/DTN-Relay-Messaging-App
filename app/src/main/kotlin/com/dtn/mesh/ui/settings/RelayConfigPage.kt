@@ -75,11 +75,24 @@ import kotlinx.coroutines.launch
 @Composable
 fun RelayConfigPage(viewModel: DtnViewModel, onBack: () -> Unit) {
     val saved by viewModel.brokerUrl.collectAsState()
+    val savedUser by viewModel.brokerUsername.collectAsState()
     val status by viewModel.transportStatus.collectAsState()
     val relayPeers by viewModel.internetPeers.collectAsState()
     val relay by viewModel.relayStatus.collectAsState()
     val nowMs = rememberRelayClock(relay)
     var broker by rememberSaveable(saved) { mutableStateOf(saved) }
+    var username by rememberSaveable(savedUser) { mutableStateOf(savedUser) }
+    var password by rememberSaveable { mutableStateOf("") }
+    var initialPassword by remember { mutableStateOf("") }
+    var passLoaded by remember { mutableStateOf(false) }
+
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        val p = viewModel.brokerPasswordOnce()
+        password = p
+        initialPassword = p
+        passLoaded = true
+    }
+
     var testing by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<RelayTestResult?>(null) }
     val scope = rememberCoroutineScope()
@@ -91,7 +104,7 @@ fun RelayConfigPage(viewModel: DtnViewModel, onBack: () -> Unit) {
     val relayText = relayStatusText(relay, relayPeers.size, nowMs)
     val statusText = if (relay == RelayStatus.Off) "Off · switch the internet relay on in Settings or Connection links"
     else relayText.title
-    val dirty = broker.trim() != saved && broker.isNotBlank()
+    val dirty = (broker.trim() != saved || username.trim() != savedUser || (passLoaded && password != initialPassword)) && broker.isNotBlank()
 
     Scaffold(
         containerColor = DtnColors.Background,
@@ -109,14 +122,14 @@ fun RelayConfigPage(viewModel: DtnViewModel, onBack: () -> Unit) {
                             testing = true
                             result = null
                             scope.launch {
-                                result = viewModel.testRelayConnection(broker)
+                                result = viewModel.testRelayConnection(broker, username, password)
                                 testing = false
                             }
                         },
                         enabled = !testing,
                         modifier = Modifier.weight(1f),
                     )
-                    PrimaryButton("✓ Save changes", onClick = { viewModel.saveBrokerUrl(broker) }, enabled = dirty,
+                    PrimaryButton("✓ Save changes", onClick = { viewModel.saveBrokerConfig(broker, username, password) }, enabled = dirty,
                         modifier = Modifier.weight(1f))
                 }
             }
@@ -151,6 +164,39 @@ fun RelayConfigPage(viewModel: DtnViewModel, onBack: () -> Unit) {
                     TextButton(onClick = { broker = RelayEndpoints.DEFAULT_URL }) { Text("Use the public broker") }
                 }
             }
+
+            SectionHeader("Authentication (optional)")
+            DtnCard {
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it.take(100) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = DtnShapes.Field,
+                    label = { Text("Username") },
+                    placeholder = { Text("Optional username") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = DtnShapes.Field,
+                    label = { Text("Password") },
+                    placeholder = { Text("Optional password") },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                )
+                Spacer(Modifier.height(6.dp))
+                Text("If username is provided, credentials are encrypted via KeyVault and sent securely over TLS (plain TCP 1883 is disabled).", style = DtnType.Meta)
+            }
+
+            InfoNote(
+                "Phones only see each other over the relay if they use the same broker.",
+                kind = NoteKind.INFO,
+            )
 
             SectionHeader("Status")
             DtnCard {

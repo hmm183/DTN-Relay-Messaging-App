@@ -37,3 +37,13 @@ LMS_Project_Scope_Assignment.docx
 ~$LMS_Project_Scope_Assignment.docx
 docx_generator/
 _diag/
+
+# Cloudflare Worker local state
+cloud/.wrangler/
+cloud/node_modules/
+cloud/.dev.vars
+
+# Temporary agent scripts and local state
+scratch/
+.kiro/agent-status.json
+

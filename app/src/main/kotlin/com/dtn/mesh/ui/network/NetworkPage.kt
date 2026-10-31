@@ -10,10 +10,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,6 +72,33 @@ fun NetworkPage(
                 LinkButtonsRow(viewModel)
                 Spacer(Modifier.height(12.dp))
             }
+            item(key = "discover-mode") {
+                val discoverable by viewModel.discoverable.collectAsState()
+                DtnCard(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Discover Mode", style = DtnType.RowTitle)
+                            Text(
+                                if (discoverable) "Visible to all nearby phones & relay"
+                                else "Stealth — only saved contacts can see you",
+                                style = DtnType.RowSubtitle,
+                            )
+                        }
+                        Switch(
+                            checked = discoverable,
+                            onCheckedChange = { viewModel.setDiscoverable(it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = DtnColors.Primary,
+                                uncheckedThumbColor = DtnColors.TextSubtitle,
+                                uncheckedTrackColor = DtnColors.CardBorder,
+                            )
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+            item(key = "battery-exemption") { BatteryExemptionCard() }
             item(key = "nearby") {
                 DtnCard(contentPadding = PaddingValues(top = 4.dp, bottom = 4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 16.dp)) {
@@ -112,4 +144,34 @@ fun NetworkPage(
             }
         }
     }
+}
+
+/**
+ * Shown only while the app is battery-optimised: Doze / Samsung "sleeping apps" then cut the
+ * relay in the background. One tap opens the system's exemption dialog; re-checked on resume.
+ */
+@Composable
+private fun BatteryExemptionCard() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var exempt by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf(com.dtn.mesh.service.BatteryOptimization.isExempt(context))
+    }
+    com.dtn.mesh.ui.OnResume { exempt = com.dtn.mesh.service.BatteryOptimization.isExempt(context) }
+    if (exempt) return
+    DtnCard(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Keep running in the background", style = DtnType.RowTitle)
+                Text(
+                    "Battery optimisation stops the relay when the screen is off, so messages wait " +
+                        "until you open the app. Allow unrestricted battery use to keep carrying them.",
+                    style = DtnType.RowSubtitle,
+                )
+            }
+            androidx.compose.material3.TextButton(onClick = { com.dtn.mesh.service.BatteryOptimization.requestExemption(context) }) {
+                Text("Allow", color = DtnColors.Primary)
+            }
+        }
+    }
+    Spacer(Modifier.height(12.dp))
 }

@@ -82,6 +82,8 @@ class DtnViewModel @Inject constructor(
     private val diagnostics: DiagnosticsLog,
     private val contactKeys: com.dtn.mesh.service.ContactKeyManager,
     private val dataExport: com.dtn.mesh.export.DataExportManager,
+    private val messageNotifier: com.dtn.mesh.service.MessageNotifier,
+    private val turnConfig: com.dtn.mesh.receiver.webrtc.TurnConfigManager,
 ) : AndroidViewModel(application) {
 
     companion object {
@@ -107,6 +109,12 @@ class DtnViewModel @Inject constructor(
 
     /** Contacts currently present on the internet relay. */
     val internetPeers: StateFlow<Set<String>> = transport.internetPeers
+
+    val inAppBanner: SharedFlow<com.dtn.mesh.service.MessageNotifier.InAppBanner> = messageNotifier.inAppBanners
+
+    fun setAppInForeground(inForeground: Boolean) {
+        messageNotifier.isAppInForeground.set(inForeground)
+    }
 
     private val mgr: MultiTransportManager? get() = transport as? MultiTransportManager
 
@@ -160,6 +168,7 @@ class DtnViewModel @Inject constructor(
                 mgr?.retryHubScan()
                 addLog("LoRa hub: retry scan", source = DiagSource.HUB)
             }
+            TransportKind.WEBRTC -> { /* WebRTC managed automatically */ }
             TransportKind.INTERNET -> {
                 mgr?.retryRelay()
                 addLog("Internet relay: retry now", source = DiagSource.RELAY)
@@ -171,8 +180,8 @@ class DtnViewModel @Inject constructor(
      * Relay Configuration › Test connection against [url] (blank = the default broker). A
      * throwaway client on the IO dispatcher; the running relay is untouched.
      */
-    suspend fun testRelayConnection(url: String): RelayTestResult =
-        mgr?.testRelay(url.trim().ifBlank { SettingsRepository.DEFAULT_BROKER })
+    suspend fun testRelayConnection(url: String, username: String? = null, password: String? = null): RelayTestResult =
+        mgr?.testRelay(url.trim().ifBlank { SettingsRepository.DEFAULT_BROKER }, username, password)
             ?: RelayTestResult(false, "—", 0L, "The relay isn't available in this build")
 
     /** One-shot user-facing notices (snackbars): joined a group, invalid QR, cleared buffer, … */
@@ -244,6 +253,72 @@ class DtnViewModel @Inject constructor(
     val unreadBaseline: StateFlow<Long> = settings.unreadBaseline.map { it ?: startedAtMs }
         .stateIn(viewModelScope, SharingStarted.Eagerly, startedAtMs)
 
+    val chatTheme: StateFlow<String> = settings.chatTheme
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsRepository.DEFAULT_THEME)
+
+    val chatWallpaperPath: StateFlow<String?> = settings.chatWallpaperPath
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /**
+     * Use a gallery photo as the chat wallpaper. It is decoded, downscaled (long side ≤ 1600 px)
+     * and saved as an app-private JPEG, so it survives the picker's temporary URI permission and
+     * the original being deleted. The previous copy is removed.
+     */
+    fun setChatWallpaperPhoto(uri: android.net.Uri) {
+        val app = getApplication<Application>()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val saved = runCatching {
+                com.dtn.mesh.ui.chats.ChatWallpapers.importPhoto(app, uri)
+            }.onFailure { Log.w(TAG, "wallpaper import failed", it) }.getOrNull()
+            if (saved == null) {
+                notifyUser("Couldn't use that photo as wallpaper")
+                return@launch
+            }
+            val old = settings.chatWallpaperPathOnce()
+            settings.setChatWallpaperPhoto(saved.absolutePath)
+            if (old != null && old != saved.absolutePath) runCatching { java.io.File(old).delete() }
+        }
+    }
+
+    fun setChatTheme(theme: String) {
+        viewModelScope.launch { settings.setChatTheme(theme) }
+    }
+
+    /**
+     * Chats-tab badge: how many chats have unread messages, computed exactly like the Chats list
+     * (so blocked contacts, hubs and deleted chats never count). Lazy: it reads flows declared
+     * further down this class.
+     */
+    val totalUnreadCount: StateFlow<Int> by lazy {
+        combine(receivedMessages, peerList, groups, lastRead, unreadBaseline) { messages, peers, groups, readMap, baseline ->
+            com.dtn.mesh.ui.chats.ChatListModel.build(messages, peers, groups, readMap, baseline, { it }, { "" })
+                .count { it.unread > 0 }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+    }
+
+    /**
+     * Queue-tab badge: OUR messages still waiting to go out or for their receipt (Queued). Copies
+     * carried for other phones and control traffic (announces, receipts) don't count.
+     */
+    val pendingOutgoingCount: StateFlow<Int> by lazy {
+        receivedMessages.map { list -> list.count { it.isOutgoing && it.state == DeliveryState.QUEUED } }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+    }
+
+    /**
+     * Delete for me: removes the message from THIS phone's chat only. The buffered bundle is left
+     * alone on purpose: (1) its row is what dedups later copies, so forgetting it (no tombstone)
+     * let a still-flooding broadcast / group message be re-accepted, re-shown and re-notified;
+     * (2) a copy we carry for others keeps travelling; (3) our own pending DM still gets
+     * delivered (like WhatsApp's "Delete for me", it doesn't unsend).
+     */
+    fun deleteMessage(messageId: String) {
+        viewModelScope.launch {
+            runCatching { chatDao.deleteMessage(messageId) }
+                .onFailure { Log.w(TAG, "delete message failed", it) }
+        }
+    }
+
     /** Contact → when its safety number last changed, for the notice in its chat. */
     val keyChangeNotices: StateFlow<Map<String, Long>> = settings.keyChangedAt
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
@@ -290,10 +365,14 @@ class DtnViewModel @Inject constructor(
                     isHub = c.shortName == "HUB",
                     blocked = c.nodeId in blocked,
                     keysChanged = c.nodeId in pendingKeys,
+                    xPub = c.xPub,
+                    edPub = c.edPub,
                 )
             }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val peers: StateFlow<List<PeerInfo>> get() = peerList
 
     /** Active strategy's per-peer score (P / f / w / Q) for the contact page and the Routing Engine, refreshed periodically. */
     private val _peerMetrics = MutableStateFlow<Map<String, PeerMetric>>(emptyMap())
@@ -344,6 +423,33 @@ class DtnViewModel @Inject constructor(
     val relayStatus: StateFlow<com.dtn.mesh.receiver.RelayStatus> =
         (transport as? MultiTransportManager)?.relayStatus
             ?: MutableStateFlow<com.dtn.mesh.receiver.RelayStatus>(com.dtn.mesh.receiver.RelayStatus.Off).asStateFlow()
+
+    val internetDirectEnabled: StateFlow<Boolean> = settings.internetDirectEnabled
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun setInternetDirect(enabled: Boolean) {
+        viewModelScope.launch { settings.setInternetDirectEnabled(enabled) }
+    }
+
+    val dualRelaySubtitle: StateFlow<String> = kotlinx.coroutines.flow.combine(
+        relayStatus,
+        (transport as? MultiTransportManager)?.workerRelayConnected ?: MutableStateFlow(false),
+        settings.internetEnabled,
+    ) { mqtt, worker, enabled ->
+        if (!enabled) "Off · reach contacts anywhere over MQTT & Cloudflare"
+        else when {
+            mqtt is com.dtn.mesh.receiver.RelayStatus.Connected && worker -> "Both connected"
+            mqtt !is com.dtn.mesh.receiver.RelayStatus.Connected && worker -> "Cloudflare active (MQTT down)"
+            mqtt is com.dtn.mesh.receiver.RelayStatus.Connected && !worker -> "MQTT connected"
+            mqtt is com.dtn.mesh.receiver.RelayStatus.Connecting -> "Connecting to relay…"
+            else -> "Offline"
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, "Offline")
+
+    fun myInviteLink(): String {
+        val name = displayNameSetting.value.ifBlank { "DTN Node" }
+        return com.dtn.mesh.crypto.LinkGenerator.buildContactLink(identity.nodeId, identity.xPub, identity.edPub, name)
+    }
 
     /** Joined groups for the chat list (channel + name). */
     val groups: StateFlow<List<GroupInfo>> = groupKeyStore.observeGroups()
@@ -412,22 +518,150 @@ class DtnViewModel @Inject constructor(
     }
 
     /** Relay Configuration › Save changes: a changed broker reconnects a running relay. */
-    fun saveBrokerUrl(url: String) {
+    val brokerUsername: StateFlow<String> = settings.brokerUsername
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    suspend fun brokerPasswordOnce(): String = settings.brokerPasswordOnce()
+
+    // ── BYOT (Bring Your Own TURN) WebRTC Configuration ──────────────────────
+
+    val turnProviderType: StateFlow<String> = settings.turnProviderType
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "DEFAULT")
+
+    /** What the last ICE resolution actually used (whose TURN account), for the TURN page. */
+    val turnResolution: StateFlow<com.dtn.mesh.receiver.webrtc.IceResolution?> = turnConfig.lastResolution
+
+    /** The saved TURN settings, decrypted, for editing on the TURN page only. */
+    suspend fun loadTurnSettings(): com.dtn.mesh.receiver.webrtc.TurnSettings = com.dtn.mesh.receiver.webrtc.TurnSettings(
+        type = runCatching { com.dtn.mesh.receiver.webrtc.TurnProviderType.valueOf(settings.turnProviderTypeOnce()) }
+            .getOrDefault(com.dtn.mesh.receiver.webrtc.TurnProviderType.DEFAULT),
+        meteredDomain = settings.turnMeteredDomainOnce(),
+        meteredApiKey = settings.turnMeteredApiKeyOnce(),
+        meteredUsername = settings.turnMeteredUsernameOnce(),
+        meteredPassword = settings.turnMeteredPasswordOnce(),
+        coturnHost = settings.turnCustomHostOnce(),
+        coturnPort = settings.turnCustomPortOnce(),
+        coturnTlsPort = settings.turnCustomTlsPortOnce(),
+        coturnUsername = settings.turnCustomUsernameOnce(),
+        coturnPassword = settings.turnCustomPasswordOnce(),
+        coturnSharedSecret = settings.turnCustomUseSharedSecretOnce(),
+        customJson = settings.turnCustomJsonOnce(),
+    )
+
+    suspend fun resolveIceServers(): com.dtn.mesh.receiver.webrtc.IceResolution = turnConfig.resolve()
+
+    suspend fun testTurnConfig(draft: com.dtn.mesh.receiver.webrtc.TurnSettings): com.dtn.mesh.receiver.webrtc.TurnTestResult =
+        turnConfig.testConfiguration(draft)
+
+    /** Saves every provider's own slots (secrets KeyVault-encrypted), then re-resolves. */
+    fun saveTurnConfig(draft: com.dtn.mesh.receiver.webrtc.TurnSettings, onSaved: () -> Unit = {}) {
+        viewModelScope.launch {
+            settings.setTurnMeteredDomain(draft.meteredDomain)
+            settings.setTurnMeteredApiKey(draft.meteredApiKey)
+            settings.setTurnMeteredUsername(draft.meteredUsername)
+            settings.setTurnMeteredPassword(draft.meteredPassword)
+            settings.setTurnCustomHost(draft.coturnHost)
+            settings.setTurnCustomPort(draft.coturnPort)
+            settings.setTurnCustomTlsPort(draft.coturnTlsPort)
+            settings.setTurnCustomUsername(draft.coturnUsername)
+            settings.setTurnCustomPassword(draft.coturnPassword)
+            settings.setTurnCustomUseSharedSecret(draft.coturnSharedSecret)
+            settings.setTurnCustomJson(draft.customJson)
+            settings.setTurnProviderType(draft.type.name)
+            val r = turnConfig.resolve()
+            notifyUser(if (r.fellBack) "Saved, but ${r.reason}: using ${r.source}" else "TURN settings saved: ${r.source}")
+            onSaved()
+        }
+    }
+
+    /** Back to the DTN Mesh default and forget every TURN credential stored on this phone. */
+    fun resetTurnToDefault(onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            settings.setTurnProviderType("DEFAULT")
+            settings.setTurnMeteredDomain("")
+            settings.setTurnMeteredApiKey("")
+            settings.setTurnMeteredUsername("")
+            settings.setTurnMeteredPassword("")
+            settings.setTurnCustomHost("")
+            settings.setTurnCustomPort(3478)
+            settings.setTurnCustomTlsPort(5349)
+            settings.setTurnCustomUsername("")
+            settings.setTurnCustomPassword("")
+            settings.setTurnCustomUseSharedSecret(false)
+            settings.setTurnCustomJson("")
+            turnConfig.resolve()
+            notifyUser("Back to the DTN Mesh default; your TURN credentials were removed from this phone")
+            onDone()
+        }
+    }
+
+    fun saveBrokerConfig(url: String, username: String, password: String) {
         viewModelScope.launch {
             val broker = url.trim().ifBlank { SettingsRepository.DEFAULT_BROKER }
-            if (broker == settings.brokerUrlOnce()) {
+            val cleanUser = username.trim()
+            val cleanPass = password.trim()
+            val oldUrl = settings.brokerUrlOnce()
+            val oldUser = settings.brokerUsernameOnce()
+            val oldPass = settings.brokerPasswordOnce()
+            if (broker == oldUrl && cleanUser == oldUser && cleanPass == oldPass) {
                 notifyUser("No changes to save")
                 return@launch
             }
             settings.setBrokerUrl(broker)
+            settings.setBrokerUsername(cleanUser)
+            settings.setBrokerPassword(cleanPass)
             if (transportStatus.value.isWanted(TransportKind.INTERNET)) {
                 mgr?.disconnect(TransportKind.INTERNET)
                 mgr?.connect(TransportKind.INTERNET)
                 addLog("Internet relay reconnecting to $broker", source = DiagSource.RELAY)
             }
-            notifyUser("Relay server saved")
+            notifyUser("Relay server configuration saved")
         }
     }
+
+    fun saveBrokerUrl(url: String) {
+        viewModelScope.launch {
+            saveBrokerConfig(url, settings.brokerUsernameOnce(), settings.brokerPasswordOnce())
+        }
+    }
+    val incomingLinkPrompt = MutableStateFlow<com.dtn.mesh.crypto.DeepLinkParser.ParsedLink?>(null)
+
+    fun handleIncomingLink(raw: String) {
+        val link = com.dtn.mesh.crypto.DeepLinkParser.parse(raw)
+        if (link != null) {
+            incomingLinkPrompt.value = link
+        } else {
+            notifyUser("Invalid or unsupported link")
+        }
+    }
+
+    fun dismissIncomingLink() {
+        incomingLinkPrompt.value = null
+    }
+
+    fun confirmIncomingLink(link: com.dtn.mesh.crypto.DeepLinkParser.ParsedLink) {
+        incomingLinkPrompt.value = null
+        when (link) {
+            is com.dtn.mesh.crypto.DeepLinkParser.ParsedLink.Contact -> {
+                importSharedContact(link.parsed) { chatId ->
+                    if (chatId != null) openChat(chatId)
+                }
+            }
+            is com.dtn.mesh.crypto.DeepLinkParser.ParsedLink.Group -> {
+                joinGroupFromInvite(com.dtn.mesh.crypto.GroupInvite.build(link.parsed.channel, link.parsed.name, link.parsed.key)) { ch ->
+                    openChat("grp:$ch")
+                }
+            }
+        }
+    }
+
+    fun requestAnnounce(nodeId: String) {
+        viewModelScope.launch {
+            outbound.requestAnnounceFrom(NodeId(nodeId))
+            notifyUser("Sent request to $nodeId. Their keys will arrive if they are online.")
+        }
+    }
+
 
     /** My public identity for the QR / safety-number screen. */
     val myNodeId: String get() = identity.nodeId.value
@@ -457,6 +691,16 @@ class DtnViewModel @Inject constructor(
 
     init {
         _localNodeId.value = identity.nodeId.value
+
+        // Observe persisted routing algorithm setting
+        viewModelScope.launch {
+            settings.routingAlgorithm.collect { algoName ->
+                val type = runCatching { StrategySelector.StrategyType.valueOf(algoName) }
+                    .getOrDefault(StrategySelector.StrategyType.EPIDEMIC)
+                _activeStrategy.value = type.name
+                strategySelector.switchTo(type)
+            }
+        }
 
         // Older builds pinned our own announce as a contact when a carrier echoed it back. The
         // orchestrator now ignores our own bundles; drop any self-contact left behind.
@@ -702,6 +946,8 @@ class DtnViewModel @Inject constructor(
             isMultiParty = multiParty,
             members = members,
             group = group,
+            replyToId = e.replyToId,
+            replySnippet = e.replySnippet,
         )
     }
 
@@ -829,6 +1075,7 @@ class DtnViewModel @Inject constructor(
         TransportKind.WIFI_DIRECT -> "Wi-Fi Direct"
         TransportKind.HUB -> "LoRa hub"
         TransportKind.INTERNET -> "Internet relay"
+        TransportKind.WEBRTC -> "WebRTC direct"
     }
 
     /**
@@ -868,7 +1115,9 @@ class DtnViewModel @Inject constructor(
      */
     fun openChat(chatKey: String?) {
         _selectedChat.value = chatKey
+        messageNotifier.activeChatKey.set(chatKey)
         if (chatKey != null) {
+            messageNotifier.cancelForChat(chatKey)
             addLog("Opened chat: ${chatKey.takeLast(8)}")
         }
     }
@@ -919,7 +1168,7 @@ class DtnViewModel @Inject constructor(
         }
     }
 
-    fun sendTestMessage(text: String) {
+    fun sendTestMessage(text: String, replyToId: String? = null, replySnippet: String? = null) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
         viewModelScope.launch {
@@ -929,7 +1178,7 @@ class DtnViewModel @Inject constructor(
                 sel.startsWith("grp:") -> NodeId.BROADCAST to (sel.removePrefix("grp:").toIntOrNull() ?: 0)
                 else -> NodeId(sel) to 0
             }
-            when (val result = outbound.sendText(trimmed, dest, channel, DEFAULT_TTL_MS)) {
+            when (val result = outbound.sendText(trimmed, dest, channel, DEFAULT_TTL_MS, replyToId, replySnippet)) {
                 is OutboundMessageService.Result.Sent -> {
                     val m = result.message
                     // Whoever we message is a contact (keeps them in the chat list).
@@ -969,19 +1218,20 @@ class DtnViewModel @Inject constructor(
      */
     fun setStrategy(typeName: String) {
         val type = runCatching { StrategySelector.StrategyType.valueOf(typeName) }
-            .getOrDefault(StrategySelector.StrategyType.PROPHET)
+            .getOrDefault(StrategySelector.StrategyType.EPIDEMIC)
         _activeStrategy.value = type.name
+        viewModelScope.launch { settings.setRoutingAlgorithm(type.name) }
         if (type == strategySelector.activeType) return
         strategySelector.switchTo(type)
         addLog("Strategy set to ${type.name}", source = DiagSource.ROUTING)
         viewModelScope.launch { refreshPeerMetrics() }
     }
 
-    /** Routing & Tuning › Reset to defaults: PRoPHET, λ 0.50, η 0.20 (λ / η saved). */
+    /** Routing & Tuning › Reset to defaults: EPIDEMIC, λ 0.50, η 0.20 (λ / η saved). */
     fun resetRoutingDefaults() {
-        setStrategy(StrategySelector.StrategyType.PROPHET.name)
+        setStrategy(StrategySelector.StrategyType.EPIDEMIC.name)
         saveRoutingTuning(SettingsRepository.DEFAULT_LAMBDA, SettingsRepository.DEFAULT_ETA)
-        notifyUser("Routing reset to the defaults: PRoPHET, λ 0.50, η 0.20")
+        notifyUser("Routing reset to the defaults: Epidemic, λ 0.50, η 0.20")
     }
 
     /** The selected algorithm's formulas and live constants (Routing & Tuning › Formulas & constants). */
@@ -1477,6 +1727,54 @@ class DtnViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Trust-on-first-use for a shared contact card received in chat or link.
+     * Never overwrites existing conflicting keys. Never sets customName.
+     */
+    fun importSharedContact(parsed: IdentityQr.Parsed, onDone: (String?) -> Unit) {
+        viewModelScope.launch {
+            val nodeId = NodeId.fromNodeNum(parsed.nodeNum)
+            if (nodeId == identity.nodeId || parsed.xPub.contentEquals(identity.xPub)) {
+                notifyUser("That's your own contact card.")
+                onDone(null)
+                return@launch
+            }
+            val outcome = contactKeys.applySharedContactKeys(
+                nodeId = nodeId.value,
+                xPub = parsed.xPub,
+                edPub = parsed.edPub,
+                name = parsed.name,
+            )
+            when (outcome) {
+                com.dtn.mesh.service.ContactKeyManager.SharedOutcome.PINNED_NEW -> {
+                    contactDao.markAdded(nodeId.value)
+                    settings.clearDeleted(nodeId.value)
+                    runCatching { outbound.sendAnnounceTo(nodeId, displayName()) }
+                    runCatching { orchestrator.triggerFlush() }
+                    notifyUser("Added ${parsed.name.ifBlank { nodeId.value.takeLast(8) }} (unverified)")
+                    onDone(nodeId.value)
+                }
+                com.dtn.mesh.service.ContactKeyManager.SharedOutcome.SAME_KEYS -> {
+                    contactDao.markAdded(nodeId.value)
+                    settings.clearDeleted(nodeId.value)
+                    onDone(nodeId.value)
+                }
+                com.dtn.mesh.service.ContactKeyManager.SharedOutcome.KEYS_CONFLICT -> {
+                    notifyUser("Different keys held for this contact. Scan their QR in person to verify.")
+                    onDone(null)
+                }
+            }
+        }
+    }
+
+    /** Generate the IdentityQr payload for an existing contact to share in chat. */
+    fun buildContactCardString(peer: PeerInfo): String? {
+        val x = peer.xPub ?: return null
+        val ed = peer.edPub ?: return null
+        val nodeNum = NodeId(peer.nodeId).toNodeNum32()
+        return IdentityQr.build(nodeNum, x, ed, peer.displayName())
+    }
+
     // ── Identity QR (exchange keys in person without waiting for an announce) ──
 
     /** Our identity QR payload: node id + public keys + name, so a contact can pin us directly. */
@@ -1640,6 +1938,7 @@ class DtnViewModel @Inject constructor(
         TransportKind.WIFI_DIRECT -> DiagSource.WIFID
         TransportKind.HUB -> DiagSource.HUB
         TransportKind.INTERNET -> DiagSource.RELAY
+        TransportKind.WEBRTC -> DiagSource.RELAY
     }
 }
 
@@ -1671,6 +1970,8 @@ data class ChatMessage(
     val members: List<MemberReceipt> = emptyList(),
     /** Our own group message: how many of [members] sent a receipt; null for every other message. */
     val group: GroupProgress? = null,
+    val replyToId: String? = null,
+    val replySnippet: String? = null,
 ) {
     /** The "other side" of this chat — used by [DtnViewModel.filteredMessages]. */
     fun peerOf(): String? = toNodeId
@@ -1733,6 +2034,8 @@ data class PeerInfo(
     val blocked: Boolean = false,
     /** QR-verified contact whose keys changed: new keys wait for Accept or a QR re-scan. */
     val keysChanged: Boolean = false,
+    val xPub: ByteArray? = null,
+    val edPub: ByteArray? = null,
 ) {
     /** Display label preferring the custom nickname, then longName, announce name, last 8 of the id. */
     fun displayName(): String =

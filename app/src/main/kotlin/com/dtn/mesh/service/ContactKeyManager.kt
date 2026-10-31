@@ -133,4 +133,39 @@ class ContactKeyManager @Inject constructor(
         }
         return changed
     }
+
+    enum class SharedOutcome {
+        PINNED_NEW,
+        SAME_KEYS,
+        KEYS_CONFLICT,
+    }
+
+    /**
+     * Trust-on-first-use for a contact card received in chat (never overwrites conflicting keys).
+     */
+    suspend fun applySharedContactKeys(
+        nodeId: String,
+        xPub: ByteArray,
+        edPub: ByteArray,
+        name: String,
+        nowMs: Long = System.currentTimeMillis(),
+    ): SharedOutcome {
+        contactDao.insertIfNew(ContactEntity(nodeId = nodeId))
+        val before = contactDao.getByNodeId(nodeId)
+        val oldX = before?.xPub
+        val oldEd = before?.edPub
+        if (oldX == null || oldEd == null) {
+            contactDao.updateKeys(nodeId, xPub, edPub, name, nowMs)
+            contactDao.setKeyVerified(nodeId, false)
+            settings.setKeyIssuedAtSec(nodeId, nowMs / 1000L)
+            settings.clearPendingKeys(nodeId)
+            diagnostics.i(DiagSource.CRYPTO, "Keys of ${nodeId.takeLast(8)} pinned from shared contact card (unverified)")
+            return SharedOutcome.PINNED_NEW
+        }
+        if (oldX.contentEquals(xPub) && oldEd.contentEquals(edPub)) {
+            return SharedOutcome.SAME_KEYS
+        }
+        diagnostics.w(DiagSource.CRYPTO, "Shared contact card for ${nodeId.takeLast(8)} has conflicting keys; ignored")
+        return SharedOutcome.KEYS_CONFLICT
+    }
 }
