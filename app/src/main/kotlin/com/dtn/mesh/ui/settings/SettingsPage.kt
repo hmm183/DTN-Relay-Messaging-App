@@ -95,6 +95,9 @@ fun SettingsPage(
     onOpenRelay: () -> Unit,
     onOpenTurn: () -> Unit = {},
     onOpenContact: (String) -> Unit,
+    onCropWallpaperPhoto: (android.net.Uri) -> Unit = {},
+    onDrawDoodle: () -> Unit = {},
+    onOpenAboutTeam: () -> Unit = {},
 ) {
     val snackbars = remember { SnackbarHostState() }
     UserMessageSnackbars(viewModel, snackbars)
@@ -141,6 +144,9 @@ fun SettingsPage(
                         Text(name.ifBlank { "Not set · contacts see node-${viewModel.myNodeId.takeLast(4)}" },
                             fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = DtnColors.TextTitle,
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(viewModel.myHandle(name), style = DtnType.Mono.copy(color = DtnColors.TextSubtitle),
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.semantics { contentDescription = "Your ID ${viewModel.myHandle(name)}" })
                     }
                     Icon(DtnIcons.ChevronRight, contentDescription = null, tint = DtnColors.TextHint)
                 }
@@ -200,7 +206,7 @@ fun SettingsPage(
             }
 
             SectionHeader("Chat Appearance")
-            ChatWallpaperCard(viewModel)
+            ChatWallpaperCard(viewModel, onCropPhoto = onCropWallpaperPhoto, onDrawDoodle = onDrawDoodle)
 
             SectionHeader("Groups")
             DtnCard(contentPadding = PaddingValues(vertical = 4.dp)) {
@@ -229,6 +235,13 @@ fun SettingsPage(
 
             SectionHeader("About")
             DtnCard { AboutSection() }
+
+            SectionHeader("The team")
+            DtnCard(contentPadding = PaddingValues(vertical = 4.dp)) {
+                SettingRow("About the team", icon = DtnIcons.Groups,
+                    subtitle = "The developers behind DTN Mesh Relay",
+                    onClick = onOpenAboutTeam)
+            }
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -367,14 +380,18 @@ private fun DisplayNameDialog(current: String, onDismiss: () -> Unit, onSave: (S
     )
 }
 
-/** Settings › Chat Appearance: solid colours, the doodle pattern, or a photo from the gallery. */
+/**
+ * Settings › Chat Appearance: solid colours, the built-in doodle pattern, a doodle the user draws
+ * ([onDrawDoodle] opens the editor), or a gallery photo ([onCropPhoto] opens the crop page).
+ */
 @Composable
-private fun ChatWallpaperCard(viewModel: DtnViewModel) {
+private fun ChatWallpaperCard(viewModel: DtnViewModel, onCropPhoto: (android.net.Uri) -> Unit, onDrawDoodle: () -> Unit) {
     val theme by viewModel.chatTheme.collectAsState()
     val photoPath by viewModel.chatWallpaperPath.collectAsState()
+    val doodlePath by viewModel.chatDoodlePath.collectAsState()
     val pickPhoto = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
-    ) { uri -> if (uri != null) viewModel.setChatWallpaperPhoto(uri) }
+    ) { uri -> if (uri != null) onCropPhoto(uri) }
 
     @Composable
     fun Option(key: String, label: String, swatch: @Composable () -> Unit, onClick: () -> Unit) {
@@ -400,9 +417,34 @@ private fun ChatWallpaperCard(viewModel: DtnViewModel) {
         com.dtn.mesh.ui.chats.ChatWallpapers.solids.forEach { p ->
             Option(p.key, p.label, swatch = { Box(Modifier.fillMaxSize().background(p.color)) }) { viewModel.setChatTheme(p.key) }
         }
-        Option(com.dtn.mesh.ui.chats.ChatWallpapers.DOODLE, "Doodle pattern", swatch = {
+        Option(com.dtn.mesh.ui.chats.ChatWallpapers.DOODLE, "Doodle pattern (built-in)", swatch = {
             Box(Modifier.fillMaxSize().then(Modifier.chatWallpaperSwatch(com.dtn.mesh.ui.chats.ChatWallpapers.DOODLE)))
         }) { viewModel.setChatTheme(com.dtn.mesh.ui.chats.ChatWallpapers.DOODLE) }
+        val doodle = com.dtn.mesh.ui.chats.rememberWallpaperPhoto(doodlePath)
+        Option(
+            com.dtn.mesh.ui.chats.ChatWallpapers.DRAWN,
+            when {
+                doodlePath == null -> "Draw your own doodle…"
+                theme == com.dtn.mesh.ui.chats.ChatWallpapers.DRAWN -> "Your doodle (tap to draw a new one)"
+                else -> "Your doodle"
+            },
+            swatch = {
+                if (doodlePath == null) {
+                    Box(Modifier.fillMaxSize().background(DtnColors.PrimarySoft), contentAlignment = Alignment.Center) {
+                        Icon(DtnIcons.Brush, contentDescription = null, tint = DtnColors.Primary, modifier = Modifier.size(16.dp))
+                    }
+                } else {
+                    Box(Modifier.fillMaxSize().then(Modifier.chatWallpaperSwatch(com.dtn.mesh.ui.chats.ChatWallpapers.DRAWN, doodle)))
+                }
+            },
+        ) {
+            // A doodle already saved is selected first; once selected, a tap opens the editor.
+            if (doodlePath != null && theme != com.dtn.mesh.ui.chats.ChatWallpapers.DRAWN) {
+                viewModel.setChatTheme(com.dtn.mesh.ui.chats.ChatWallpapers.DRAWN)
+                return@Option
+            }
+            onDrawDoodle()
+        }
         val photo = com.dtn.mesh.ui.chats.rememberWallpaperPhoto(photoPath)
         Option(
             com.dtn.mesh.ui.chats.ChatWallpapers.PHOTO,

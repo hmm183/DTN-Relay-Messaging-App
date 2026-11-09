@@ -45,13 +45,17 @@ the Worker bundles. **No feature below has been tested on two phones yet**: that
 | ✅ | Fallback web page | Self-hosted QR library, strict CSP, no referrer; working Open in app |
 | 🟨 | App Links (tap to open) | Host set and `assetlinks.json` served; it lists the debug key only. Add the release / Play signing key when you sign a release; confirm with `adb shell pm get-app-links com.dtn.mesh` |
 | 🟨 | Name#tag handles + search | 4-hex tags are display-only and can collide; search must show full ids before acting |
+| ✅ | Own Name#tag shown | Settings › Profile under the display name; My identity "Your ID" with Copy (`DtnViewModel.myHandle`) |
 
 ## UI
 | | Feature | Notes |
 |---|---|---|
 | ✅ | Swipe between tabs | One pager, one destination; Back → Network |
 | ✅ | Badges | Chats with unread; our own Queued messages |
-| ✅ | Wallpapers | 5 colours, doodle, gallery photo (private copy) |
+| ✅ | Wallpapers | 5 colours, built-in doodle pattern, a doodle you draw, gallery photo (private copy). Not device-tested |
+| ✅ | Photo crop | Pinch / drag / rotate / reset under a frame shaped like the chat window; any size or ratio; EXIF orientation, HEIC on Android 9+. Fixes "Couldn't use that photo as wallpaper" on every photo (the bounds decode's null result was treated as a failure) |
+| ✅ | Draw a doodle | 8 pens, 3 sizes, eraser, 6 backgrounds, Undo, Clear; survives rotation; saved as PNG, drawn without the scrim |
+| ✅ | About the team | Last row of Settings: a swipeable card per developer (photo, name, GitHub / LinkedIn logo buttons), dots to jump. Not device-tested |
 | ✅ | Discover toggle on Network | |
 | ✅ | Developer Tools in the top bar | |
 

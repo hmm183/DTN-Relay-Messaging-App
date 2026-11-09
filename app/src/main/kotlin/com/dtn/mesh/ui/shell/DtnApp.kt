@@ -128,6 +128,12 @@ internal object Routes {
     /** Relay Configuration (Settings › Relay server, Developer Tools, the Internet relay page). */
     const val RELAY = "relay"
     const val TURN = "turn"
+    /** Crop a gallery photo to the chat window (Settings › Chat Appearance), by its encoded URI. */
+    const val WALLPAPER_CROP = "wallpaper/crop/{uri}"
+    /** Draw a doodle wallpaper (Settings › Chat Appearance). */
+    const val WALLPAPER_DOODLE = "wallpaper/doodle"
+    /** About the team (the last row of Settings). */
+    const val ABOUT_TEAM = "about/team"
     /** A link's page: ble, wifi_direct, hub, internet. */
     const val TRANSPORT = "transport/{kind}"
 
@@ -138,6 +144,7 @@ internal object Routes {
     fun dev(page: String) = "dev/$page"
     fun group(channel: Int) = "group/$channel"
     fun transport(kind: TransportKind) = "transport/" + kind.routeName()
+    fun wallpaperCrop(uri: Uri) = "wallpaper/crop/" + Uri.encode(uri.toString())
 }
 
 /** The four bottom-nav tabs; Network is the start destination. */
@@ -273,8 +280,23 @@ private fun DtnShell(viewModel: DtnViewModel) {
                 onOpenRelay = { nav.navigate(Routes.RELAY) { launchSingleTop = true } },
                 onOpenTurn = { nav.navigate(Routes.TURN) { launchSingleTop = true } },
                 onOpenContact = { nav.navigate(Routes.contact(it)) { launchSingleTop = true } },
+                onCropWallpaperPhoto = { nav.navigate(Routes.wallpaperCrop(it)) { launchSingleTop = true } },
+                onDrawDoodle = { nav.navigate(Routes.WALLPAPER_DOODLE) { launchSingleTop = true } },
+                onOpenAboutTeam = { nav.navigate(Routes.ABOUT_TEAM) { launchSingleTop = true } },
             )
         }
+        composable(Routes.WALLPAPER_CROP, arguments = listOf(navArgument("uri") { type = NavType.StringType })) { entry ->
+            val uri = remember(entry) { Uri.parse(entry.arguments?.getString("uri").orEmpty()) }
+            com.dtn.mesh.ui.chats.WallpaperCropPage(
+                viewModel, photoUri = uri,
+                onDone = { nav.popBackStack() },
+                onBack = { nav.popBackStack() },
+            )
+        }
+        composable(Routes.WALLPAPER_DOODLE) {
+            com.dtn.mesh.ui.chats.DoodleEditorPage(viewModel, onDone = { nav.popBackStack() }, onBack = { nav.popBackStack() })
+        }
+        composable(Routes.ABOUT_TEAM) { com.dtn.mesh.ui.settings.AboutTeamPage(onBack = { nav.popBackStack() }) }
         composable(Routes.DEV) {
             DeveloperToolsPage(onBack = { nav.popBackStack() }, onOpen = { page ->
                 if (page == DevPage.RELAY) nav.navigate(Routes.RELAY) { launchSingleTop = true } else nav.navigate(Routes.dev(page))

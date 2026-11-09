@@ -64,8 +64,8 @@ over radio", see wire-protocol.md › internet relay) makes one a carrier (A →
   + v5: a late re-send of a DM whose receipt already passed the hub is dropped, not re-flooded.
   Every hub must run v3 or later (v2 hubs send nothing to phones); only v4+ hubs are listed under
   LoRa hub › Available hubs.
-- `PROJECT_MEMORY.md` — living design + changelog (Parts A target / B done / C todo / E–L sessions;
-  L = the UI redesign).
+- `PROJECT_MEMORY.md` — living design + changelog (Parts A target / B done / C todo / E–O sessions;
+  L = the UI redesign, O = own ID, wallpaper crop / doodle editor, About the team).
 - `docs/dtn-hub-architecture.md` — architecture proposal. `docs/play-store/` — store listing,
   privacy policy, data safety, release checklist.
 
@@ -181,9 +181,15 @@ over radio", see wire-protocol.md › internet relay) makes one a carrier (A →
   the chat). Names follow `PeerInfo.displayName()`; a group invite DM shows "Group invite · name",
   never its key. Broadcast messages are stored under `NodeId.BROADCAST` but the UI chat key is
   `BROADCAST_CHAT_ID`: the notifier maps it.
-- Chat wallpaper (`chats/ChatWallpaper.kt`, Settings › Chat Appearance): 5 solid colours, a drawn
-  doodle pattern, or a gallery photo copied (≤ 1600 px JPEG) into `filesDir` (DataStore
-  `chat_theme` / `chat_wallpaper_path`), drawn with a 45 % dark scrim.
+- Chat wallpaper (`chats/ChatWallpaper.kt`, Settings › Chat Appearance): 5 solid colours, the built-in
+  doodle pattern, a doodle the user draws (`chats/DoodleEditorPage.kt`, route `wallpaper/doodle`, PNG,
+  theme `DRAWN`, `chat_doodle_path`, no scrim), or a gallery photo cropped on `chats/WallpaperCropPage.kt`
+  (`wallpaper/crop/{uri}`; pan / pinch / rotate under a frame shaped like the chat window,
+  `ChatWallpapers.lastChatAreaPx`; pure `CropTransform`) saved (≤ 1600 px JPEG) into `filesDir`
+  (`chat_theme` / `chat_wallpaper_path`), drawn with a 45 % dark scrim.
+- Settings › About the team (`settings/AboutTeamPage.kt`, `about/team`): a swipeable card per developer
+  (`AboutTeam.members`: name, photo `res/drawable-nodpi/team_*`, GitHub / LinkedIn logo buttons; no roles).
+  Own Name#tag (`DtnViewModel.myHandle`) shows under the display name in Settings and on My identity.
 - WebRTC direct (`receiver/webrtc/WebRtcTransportAdapter.kt`, Settings › Internet direct, off by
   default; `io.getstream:stream-webrtc-android`, arm64-v8a + armeabi-v7a, R8 keep rules): opened
   only by a DM to an added contact over the relay (`MultiTransportManager` → `maybeConnect`, 1/min

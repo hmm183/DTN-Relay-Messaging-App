@@ -73,6 +73,13 @@ class SettingsRepository @Inject constructor(
     suspend fun setChatWallpaperPhoto(path: String) {
         store.edit { it[KEY_WALLPAPER_PATH] = path; it[KEY_THEME] = THEME_PHOTO }
     }
+    /** Absolute path of the app-private image of the doodle the user drew (Draw your own doodle). */
+    val chatDoodlePath: Flow<String?> = store.data.map { it[KEY_DOODLE_PATH] }
+    suspend fun chatDoodlePathOnce(): String? = chatDoodlePath.first()
+    /** Set the drawn doodle wallpaper (and select it) in one edit. */
+    suspend fun setChatDoodle(path: String) {
+        store.edit { it[KEY_DOODLE_PATH] = path; it[KEY_THEME] = THEME_DRAWN }
+    }
 
     val brokerUsername: Flow<String> = store.data.map { it[KEY_BROKER_USER] ?: "" }
     suspend fun brokerUsernameOnce(): String = brokerUsername.first()
@@ -309,6 +316,9 @@ class SettingsRepository @Inject constructor(
         private val KEY_WALLPAPER_PATH = stringPreferencesKey("chat_wallpaper_path")
         /** [chatTheme] value for the gallery-photo wallpaper. */
         const val THEME_PHOTO = "PHOTO"
+        private val KEY_DOODLE_PATH = stringPreferencesKey("chat_doodle_path")
+        /** [chatTheme] value for the doodle the user drew. */
+        const val THEME_DRAWN = "DRAWN"
         private val KEY_LAMBDA = floatPreferencesKey("dimaxprop_lambda")
         private val KEY_ETA = floatPreferencesKey("q_shaping_eta")
         private val KEY_BLOCKED = stringSetPreferencesKey("blocked_nodes")

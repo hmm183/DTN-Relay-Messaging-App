@@ -1,98 +1,100 @@
 # DTN Mesh Relay — Privacy Policy
 
-*Effective: 24 October 2026. Publisher: [your name or team], contact: [your email].*
+*Effective Date: 31 October 2026*  
+*Publisher: DTN Mesh Relay Team (Vrishank Raina, Raushan Shrivastwa, Vishwanath Tiwari, Priyanshu Upadhyay)*  
+*Contact: dtnmesh.relay@gmail.com | Project Repository: https://github.com/hmm183/DTN-Relay-Messaging-App*
 
-DTN Mesh Relay ("the app") is an off-grid messenger: messages travel directly between phones and
-optional LoRa hubs, and optionally over an internet relay. The publisher runs **no servers** and
-receives **no data** from the app. There are no accounts, ads, analytics or crash-reporting services.
+DTN Mesh Relay ("the app") is a decentralized, off-grid peer-to-peer (P2P) delay-tolerant messenger. Messages travel directly between Android devices, optional ESP32 LoRa hardware hubs, and an optional dual internet relay fallback. 
 
-## Data stored on your phone
+The application publisher runs **no data-collection servers** and receives **no personal data, telemetry, or analytics** from your device. There are no user accounts, third-party advertising SDKs, tracking frameworks, or proprietary crash-reporting services embedded in the app.
 
-- Your identity: a key pair generated on the phone, your node id, and the display name you choose
-  (optional). The node id is derived (hashed with the app's package name) from Android's app-specific
-  device id (`ANDROID_ID`), so each phone has one identity: it stays the same when you clear the app's
-  data or reinstall it, and changes only after a factory reset. Clearing data still creates new keys.
-- Contacts you have met or scanned: their node ids, public keys, names and verification status, plus
-  the contacts you blocked or deleted and when you last read each chat.
-- Your chats, the store-and-forward buffer (messages you're carrying, including encrypted messages for
-  other people), a message journal (when each message was created, forwarded, delivered), routing
-  statistics and settings.
+---
 
-This data is excluded from Android cloud backups and device-to-device transfers. Uninstalling the app,
-or clearing its storage, deletes all of it; only the node id comes back the same, because it is
-derived again from the device id. The app also keeps a diagnostics log (link and routing events: ids,
-counts and times, never message text or keys). Developer Tools › Export Data writes copies of the
-research data and, with Export all logs, of these logs and the app's own Android system log to the
-app's own storage folder, only when you tap export. They leave the phone only if you share them
-yourself (Share).
+## 1. Data Stored Locally on Your Device
 
-## Data that leaves your phone
+All critical data remains on your physical phone:
 
-| What | Who receives it | Readable by them? |
-|---|---|---|
-| Direct and group messages | Nearby phones and LoRa hubs that carry them; the internet relay if on | No — end-to-end encrypted; only the recipient(s) can read them |
-| Broadcasts ("Broadcast to All") | Anyone in reach; the internet relay if on | Yes — broadcasts are public by design |
-| Your announce: node id, public keys, display name | Nearby phones and hubs; the internet relay if on | Yes — this is how others can message you securely |
-| Your node id (your address on the mesh, derived from the device id) | Nearby phones, LoRa hubs and the relay, in every message header, announce and hub registration | Yes — needed to route messages to you |
-| Message headers: message id, sender and recipient node ids, lifetime, hop count | Every phone, hub and relay that carries a message | Yes — needed to route messages |
-| Delivery receipts | Phones, hubs and the relay on the way back to the sender | Yes (message ids only) |
-| Online/offline status and time (internet relay only) | The relay broker and its other users | Yes |
-| Your display name in that online status (internet relay, only while Discover is on) | The relay broker and its other users | Yes |
-| Route questions: "which phone can reach node X over radio?" and the answers (internet relay only) | The relay broker and its other users | Yes (node ids only) — this is how messages hop from the internet to phones that only have Bluetooth |
-| Your IP addresses, during a direct internet connection (Internet direct, off by default) | Only the contact you connect to, and the TURN server in use if a direct path isn't possible | Yes — needed to connect directly; messages stay end-to-end encrypted |
-| Connection-setup messages for Internet direct | The relay broker and the Cloudflare relay | No — encrypted to the contact; only who is contacting whom is visible |
+- **Identity & Keys:** A cryptographic key pair generated locally (X25519/Ed25519), your mesh Node ID, and an optional display name you choose. The Node ID is a deterministic hash of Android's app-specific device ID (`ANDROID_ID`) and the application package name (`com.dtn.mesh`), giving each device a consistent mesh address that survives app storage clears and reinstalls, resetting only upon a full factory reset of the phone.
+- **Contacts & Safety Numbers:** Public keys, Node IDs, user-assigned contact names, safety verification status, and blocklists of nodes you meet or scan via QR code.
+- **Message Store & Store-Carry-Forward Buffer:** Your private chats, queued outbound messages, and transient bundles carried on behalf of other mesh users (which are end-to-end encrypted; intermediate carrier nodes cannot read their contents).
+- **Routing & Diagnostics Journal:** Encounter frequency logs, link quality history (RSSI/SNR), and localized routing statistics (PRoPHET / MaxProp / Double Q-learning Q-tables).
+- **Custom Wallpapers:** Any wallpaper selected via the Android system photo picker or created on the in-app doodle canvas is stored solely in private app sandbox storage in cropped/downscaled form.
 
-**Second relay and TURN (optional).** When the build includes the DTN Mesh Cloudflare Worker, the
-app also connects to it (operated on Cloudflare, Inc.'s network) alongside the broker; it sees the
-same kind of data as the broker. For Internet direct the app may use a TURN server: the DTN Mesh
-default (Metered, Inc.) or one you configure; it relays encrypted traffic and sees IP addresses.
-Your own TURN credentials stay on your phone.
+> **Data Isolation:** All local database storage is explicitly excluded from Android cloud backups (`android:allowBackup="false"`) and Android 12+ device-to-device migration (`dataExtractionRules`). Uninstalling the app permanently purges all local databases, message queues, and encryption keys.
 
-**Internet relay (optional, off until you turn it on).** By default it uses the public MQTT broker
-`broker.hivemq.com`, operated by HiveMQ GmbH, which is shared by everyone who uses it. The broker sees
-your IP address, your node id, when you're online, message headers and the data in the table above
-— never the text of encrypted messages. Connections use TLS by default; on networks that block it, the
-app may fall back to an unencrypted connection (encrypted messages stay encrypted). You can enter your
-own broker in Settings. HiveMQ's handling of connection data is covered by its own privacy policy.
+---
 
-## Permissions
+## 2. Data Transmitted Off Your Device
 
-- **Bluetooth (Nearby devices)** — find and exchange messages with nearby phones.
-- **Nearby Wi-Fi devices** — Wi-Fi Direct between phones and joining a LoRa hub's Wi-Fi.
-- **Location (Android 12 and older only)** — those Android versions require it for Bluetooth / Wi-Fi
-  scans. The app never reads or stores your location.
-- **Camera** — scan contact and group QR codes (optional; codes can also be loaded from an image).
-- **Notifications** — the "relay running" notification while the app keeps links alive, and new
-  message notifications (the lock screen shows only "New message" unless you allow sensitive content).
-- **Photos (only if you pick one)** — a chat wallpaper. The system photo picker gives the app only the
-  photo you choose; a downscaled copy is stored inside the app and never sent anywhere.
-- **Battery optimisation exemption (optional)** — the app asks once so the relay keeps carrying
-  messages with the screen off. Wake locks are held only for a few seconds around relay connections.
-- **Internet** — the optional internet relay.
+The app only transmits data across physical radio interfaces (Bluetooth Low Energy, Wi-Fi Direct, LoRa Hub) or internet relays when actively participating in the mesh:
 
-## Retention
+| Data Type | Recipients | End-to-End Encrypted? | Purpose |
+|---|---|---|---|
+| **Direct & Group Messages** | Recipient and intermediate carrier phones / LoRa hubs / relays | **Yes** (X25519 + AES-256-GCM) | User communication. Intermediate nodes and relay brokers cannot read message payloads. |
+| **Broadcast Messages** ("Broadcast to All") | Any device in radio reach or connected to the relay | **No** (Public by design) | Public emergency announcements or open channel communication. |
+| **Node Announce & Identity** | Nearby mesh peers, LoRa hubs, and relay broker | **No** (Signed public keys) | Necessary to exchange public keys and establish secure sessions. |
+| **Packet Routing Headers** | Carrier nodes, LoRa hubs, and relay brokers | **No** (Routing metadata) | Contains message UUID, sender Node ID, destination Node ID, TTL, and hop count required for routing. |
+| **Delivery Receipts (`✓✓`)** | Reverse-path carrier nodes back to the original sender | **No** (Message UUID only) | Acknowledges successful end-to-end bundle delivery. |
+| **Online Presence & Display Name** | Connected relay broker and peers | **No** (Only when Internet Relay & Discover are enabled) | Displays online/offline reachability on internet fallback. |
+| **Multi-Hop Route Queries (`who_sees`)** | Connected relay broker and peers | **No** (Target Node ID only) | Locates peers with radio connectivity to off-grid nodes. |
+| **IP Addresses (Direct WebRTC)** | Directly connected peer and TURN server | **No** (Direct socket / ICE candidates) | Exchanged only when "Internet Direct" mode is explicitly enabled by the user. |
 
-Messages in the buffer expire after their lifetime (4 hours by default). Chats, contacts and keys stay
-on your phone until you delete them or uninstall the app. The node id persists until the phone is
-factory reset (it is recomputed from the device id, so reinstalling gives the same one); other phones
-keep it in their contact lists until they delete you. On the relay, your last online/offline status is kept by
-the broker (as a retained message) until it is replaced.
+---
 
-## Children
+## 3. Third-Party Services (Optional Internet Mode)
 
-The app is not directed at children under 13.
+When the optional internet relay is toggled on in Settings:
 
-## Your choices
+1. **MQTT Relay Broker:** By default, connects to the public broker `broker.hivemq.com` (operated by HiveMQ GmbH) or a custom MQTT broker defined by the user. HiveMQ processes network IP addresses and connection metadata according to its standard privacy policy. No plaintext of encrypted messages is ever visible to the broker.
+2. **Cloudflare Worker Relay:** Connects to the DTN WebSocket relay (`dtnmesh.vrishankrainaphotos1.workers.dev` on Cloudflare, Inc.'s global network) for roster and message signaling. Cloudflare processes transport IP addresses ephemerally.
+3. **TURN Server (WebRTC Direct):** If using Internet Direct, NAT traversal may utilize Metered, Inc. or custom user-configured TURN servers. Only encrypted streams and IP addresses pass through the TURN relay.
 
-Leave the internet relay off, leave the display name empty, verify contacts in person, block or delete
-contacts, clear the buffer, or uninstall the app to delete everything it stored. Because the publisher holds no data about you,
-there is nothing to request from us; copies of messages you sent are under the control of the
-recipients and carriers that received them.
+---
 
-## Changes
+## 4. Android Device Permissions & Justification
 
-Updates to this policy are published at this address with a new effective date.
+- **Bluetooth (`BLUETOOTH_SCAN`, `BLUETOOTH_ADVERTISE`, `BLUETOOTH_CONNECT`):** Required for P2P mesh discovery, GATT server hosting, and opportunistic message exchange with nearby phones. Scans use the `neverForLocation` flag.
+- **Nearby Devices / Wi-Fi (`NEARBY_WIFI_DEVICES`, `ACCESS_WIFI_STATE`, `CHANGE_WIFI_STATE`):** Required for high-throughput Wi-Fi Direct transfers and for connecting to standalone ESP32 LoRa Hub SoftAPs (`DTN-HUB-*`).
+- **Location (`ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`):** Required only on legacy Android versions (Android 12L / API 32 and older) by the Android OS framework to permit BLE scanning. **The app never reads, tracks, or transmits GPS coordinates or geographic location.**
+- **Camera (`CAMERA`):** Optional. Used strictly to scan contact and group invite QR codes. No photos or video streams are recorded or stored.
+- **Notifications (`POST_NOTIFICATIONS`):** Used to display the persistent Foreground Service status indicator and incoming message alerts.
+- **Battery Optimization Exemption (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`):** Optional. Requested once so the store-and-forward engine and internet relay can maintain opportunistic background synchronization when the screen is turned off.
+- **Internet (`INTERNET`, `ACCESS_NETWORK_STATE`):** Used solely for the optional MQTT and Cloudflare Worker internet relays.
 
-## Contact
+---
 
-[your email]
+## 5. Research Data & Diagnostics Export
+
+Users can optionally export mesh performance and reinforcement learning diagnostics via **Settings › Developer Tools › Export Data**:
+* Exported files (`encounters.csv`, `contacts.csv`, `decisions.csv`, `messages.csv`, `q_tables.json`) record topological timings, RSSI, hop counts, and Q-values.
+* **No message text, private cryptographic keys, or conversation contents are ever written to research logs or diagnostics exports.**
+* Export archives are saved directly to the app's sandboxed storage (`Android/data/com.dtn.mesh/files/exports/`) and leave your phone only if you explicitly choose to share the file via the Android Share Sheet.
+
+---
+
+## 6. Data Retention & User Deletion Rights
+
+* **Carried Bundles:** Messages held in the store-and-forward buffer expire automatically after their TTL window (default: 4 hours) and are permanently purged.
+* **User Control:** Users can at any time clear the forwarding queue, delete individual contacts, delete chats ("Delete for me"), or uninstall the app.
+* **Complete Erasure:** Because the publishers maintain no centralized databases or user accounts, uninstalling the application or clearing its app storage in Android Settings completely and irreversibly erases all local data.
+
+---
+
+## 7. Children's Privacy
+
+The application is not directed at children under the age of 13. We do not knowingly collect or solicit personal information from children.
+
+---
+
+## 8. Policy Updates
+
+Any modifications to this Privacy Policy will be reflected with an updated effective date. The latest version is maintained within the application documentation and hosted on the project web landing page.
+
+---
+
+## 9. Contact & Inquiries
+
+For technical questions, privacy inquiries, or source verification, contact:
+* **Team Email:** dtnmesh.relay@gmail.com
+* **Project Repository:** https://github.com/hmm183/DTN-Relay-Messaging-App
+* **Development Team:** Vrishank Raina, Raushan Shrivastwa, Vishwanath Tiwari, Priyanshu Upadhyay

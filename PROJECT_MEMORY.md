@@ -1405,3 +1405,29 @@ Status of every feature: `docs/FEATURES.md`. Unit tests 429 → 457; debug 35.7 
   route answers via `isPhysicallyReachable` (no WebRTC).
 - **Secrets:** hard-coded Metered key/credential removed from source (were never committed); stop-gap values in
   `local.properties` until the Worker mints TURN, then rotate.
+
+# PART O — 2026-10-31 (later): own ID, wallpaper crop + doodle editor, About the team (uncommitted on `main`)
+
+`assembleDebug` and `testDebugUnitTest` pass. **Not device-tested** (no phone was connected).
+
+- **Own Name#tag:** `DtnViewModel.myHandle(name)` = `NodeId.discordHandle` of the display name (or `node-xxxx`, what our
+  announces carry when unset). Shown under the name in Settings › Profile and as "Your ID" + Copy on My identity.
+- **Gallery wallpaper bug:** `importPhoto` wrapped the `inJustDecodeBounds` decode in `?: error(...)`, but that decode
+  always returns null by design, so every photo failed with "Couldn't use that photo as wallpaper". Replaced by
+  `ChatWallpapers.decodeForCrop` (ImageDecoder on Android 9+ incl. HEIC, else BitmapFactory + EXIF rotation; long side
+  ≤ 2400 px) and `saveWallpaper` (≤ 1600 px, JPEG 90 / PNG).
+- **Crop page** (`chats/WallpaperCropPage.kt`, route `wallpaper/crop/{uri}`): fixed frame with the chat window's aspect
+  (`ChatWallpapers.lastChatAreaPx`, recorded by `ChatPage` via `onSizeChanged`; screen estimate before any chat opened),
+  pinch / drag / double-tap reset / rotate 90°. Pure math in `CropTransform` (zoom 1–5, offsets clamped so the photo
+  always covers the frame, `cropRect`). `DtnViewModel.setChatWallpaperPhoto(bitmap, crop, onDone)` saves it.
+- **Doodle editor** (`chats/DoodleEditorPage.kt`, route `wallpaper/doodle`): strokes stored as 0..1 fractions (saveable,
+  survive rotation), 8 pens, 3 widths, eraser, 6 backgrounds, Undo, Clear (confirm); `renderDoodle` draws a PNG of the
+  chat window's shape. Theme `DRAWN` (DataStore `chat_doodle_path`), drawn without the 45 % scrim. The built-in pattern
+  stays as "Doodle pattern (built-in)" (`DOODLE`).
+- **About the team** (`settings/AboutTeamPage.kt`, route `about/team`, the last Settings row): a `HorizontalPager` of
+  member cards (photo with the name over a dark fade, peeking neighbours, "n of 4" badge), GitHub / LinkedIn logo
+  buttons (`DtnIcons.GitHub` / `LinkedIn`, Simple Icons CC0 paths) opening the profile via `LocalUriHandler` (a snackbar
+  if nothing can open it), pager dots, then "What we built". Members: Vrishank Raina, Raushan Shrivastwa, Vishwanath
+  Tiwari, Priyanshu Upadhyay; photos `res/drawable-nodpi/team_*` (copied from `photos/`), `photoBias` keeps faces in the
+  crop. No roles and no college details by request.
+- New icons: Undo, RotateRight, Brush, GitHub, LinkedIn (all in `DtnIcons.all`, covered by `DtnIconsTest`).

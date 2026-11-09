@@ -70,6 +70,7 @@ fun IdentityPage(viewModel: DtnViewModel, onBack: () -> Unit) {
     // The QR carries the display name: rebuilt when it changes.
     val qr = remember(name) { viewModel.identityQrString() }
     val nodeId = viewModel.myNodeId.removePrefix("!")
+    val handle = remember(name) { viewModel.myHandle(name) }
     val fingerprint = remember { viewModel.myFingerprintHex }
     val lines = remember(fingerprint) { UiText.fingerprintLines(fingerprint) }
     val qrActions = rememberQrActions(
@@ -95,6 +96,18 @@ fun IdentityPage(viewModel: DtnViewModel, onBack: () -> Unit) {
         ) {
             DtnCard {
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { QrImage(qr, size = 240.dp) }
+                Spacer(Modifier.height(12.dp))
+                Text("Your ID", style = DtnType.Meta)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(handle, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = DtnColors.TextTitle)
+                        Text("Your display name + the last 4 characters of your node id. Others can search for it in Peers.",
+                            style = DtnType.Meta)
+                    }
+                    IconButton(onClick = { copied("ID", handle) }) {
+                        Icon(DtnIcons.Copy, contentDescription = "Copy your ID", tint = DtnColors.Primary)
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
                 Text("Node ID", style = DtnType.Meta)
                 Row(verticalAlignment = Alignment.CenterVertically) {

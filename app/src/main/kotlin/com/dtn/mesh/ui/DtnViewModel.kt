@@ -259,24 +259,62 @@ class DtnViewModel @Inject constructor(
     val chatWallpaperPath: StateFlow<String?> = settings.chatWallpaperPath
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    /** The doodle the user drew (Settings › Chat Appearance › Draw your own doodle). */
+    val chatDoodlePath: StateFlow<String?> = settings.chatDoodlePath
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
     /**
-     * Use a gallery photo as the chat wallpaper. It is decoded, downscaled (long side ≤ 1600 px)
-     * and saved as an app-private JPEG, so it survives the picker's temporary URI permission and
-     * the original being deleted. The previous copy is removed.
+     * Use the part of a gallery photo the user framed on the crop page as the chat wallpaper:
+     * [crop] = left, top, width, height in [source] px. It is saved as an app-private JPEG (long
+     * side ≤ 1600 px), so it survives the picker's temporary URI permission and the original
+     * being deleted; the previous copy is removed. [onDone] runs on the main thread (true = saved).
      */
-    fun setChatWallpaperPhoto(uri: android.net.Uri) {
+    fun setChatWallpaperPhoto(source: android.graphics.Bitmap, crop: IntArray, onDone: (Boolean) -> Unit) {
         val app = getApplication<Application>()
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val saved = runCatching {
-                com.dtn.mesh.ui.chats.ChatWallpapers.importPhoto(app, uri)
-            }.onFailure { Log.w(TAG, "wallpaper import failed", it) }.getOrNull()
+                val part = android.graphics.Bitmap.createBitmap(source, crop[0], crop[1], crop[2], crop[3])
+                try {
+                    com.dtn.mesh.ui.chats.ChatWallpapers.saveWallpaper(app, part, "chat_wallpaper")
+                } finally {
+                    if (part !== source) part.recycle()
+                }
+            }.onFailure { Log.w(TAG, "wallpaper crop failed", it) }.getOrNull()
             if (saved == null) {
                 notifyUser("Couldn't use that photo as wallpaper")
-                return@launch
+            } else {
+                val old = settings.chatWallpaperPathOnce()
+                settings.setChatWallpaperPhoto(saved.absolutePath)
+                if (old != null && old != saved.absolutePath) runCatching { java.io.File(old).delete() }
+                notifyUser("Chat wallpaper set")
             }
-            val old = settings.chatWallpaperPathOnce()
-            settings.setChatWallpaperPhoto(saved.absolutePath)
-            if (old != null && old != saved.absolutePath) runCatching { java.io.File(old).delete() }
+            withContext(kotlinx.coroutines.Dispatchers.Main) { onDone(saved != null) }
+        }
+    }
+
+    /**
+     * Use a doodle the user drew as the chat wallpaper (saved as an app-private PNG, long side
+     * ≤ 1600 px, the previous doodle removed). [bitmap] is recycled. [onDone] runs on the main thread.
+     */
+    fun setChatDoodle(bitmap: android.graphics.Bitmap, onDone: (Boolean) -> Unit) {
+        val app = getApplication<Application>()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val saved = runCatching {
+                try {
+                    com.dtn.mesh.ui.chats.ChatWallpapers.saveWallpaper(app, bitmap, "chat_doodle", png = true)
+                } finally {
+                    bitmap.recycle()
+                }
+            }.onFailure { Log.w(TAG, "doodle save failed", it) }.getOrNull()
+            if (saved == null) {
+                notifyUser("Couldn't save the doodle")
+            } else {
+                val old = settings.chatDoodlePathOnce()
+                settings.setChatDoodle(saved.absolutePath)
+                if (old != null && old != saved.absolutePath) runCatching { java.io.File(old).delete() }
+                notifyUser("Chat wallpaper set")
+            }
+            withContext(kotlinx.coroutines.Dispatchers.Main) { onDone(saved != null) }
         }
     }
 
@@ -665,6 +703,14 @@ class DtnViewModel @Inject constructor(
 
     /** My public identity for the QR / safety-number screen. */
     val myNodeId: String get() = identity.nodeId.value
+
+    /**
+     * This phone's Discord-style ID, "Alice#769a": the display name (or the "node-769a" name our
+     * announces carry while none is set) + the node id's last 4 hex digits — the same form the
+     * Peers search and other phones' lists show.
+     */
+    fun myHandle(name: String): String =
+        NodeId.discordHandle(name.ifBlank { "node-" + identity.nodeId.value.takeLast(4) }, identity.nodeId.value)
     val myFingerprintHex: String get() = identity.fingerprint().joinToString("") { "%02x".format(it) }
 
     @Volatile private var cachedName: String = ""

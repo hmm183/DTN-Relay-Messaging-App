@@ -52,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
@@ -136,7 +137,14 @@ fun ChatPage(
     var showShareContactSheet by rememberSaveable { mutableStateOf(false) }
     val currentTheme by viewModel.chatTheme.collectAsState()
     val wallpaperPath by viewModel.chatWallpaperPath.collectAsState()
-    val wallpaperPhoto = rememberWallpaperPhoto(if (currentTheme == ChatWallpapers.PHOTO) wallpaperPath else null)
+    val doodlePath by viewModel.chatDoodlePath.collectAsState()
+    val wallpaperPhoto = rememberWallpaperPhoto(
+        when (currentTheme) {
+            ChatWallpapers.PHOTO -> wallpaperPath
+            ChatWallpapers.DRAWN -> doodlePath
+            else -> null
+        },
+    )
     var replyingTo by remember { mutableStateOf<ChatMessage?>(null) }
     var showDeleteConfirm by remember { mutableStateOf<ChatMessage?>(null) }
     val snackbars = remember { SnackbarHostState() }
@@ -226,6 +234,8 @@ fun ChatPage(
         // imePadding must only add what the keyboard covers beyond it (no double gap).
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)
+                // The wallpaper's area: the crop frame and the doodle canvas take its shape.
+                .onSizeChanged { ChatWallpapers.lastChatAreaPx = it }
                 .chatWallpaper(currentTheme, wallpaperPhoto).imePadding(),
         ) {
             if (peer != null && peer.keysChanged) {
