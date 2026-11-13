@@ -5,7 +5,8 @@
       "namespace": "android_app",
       "package_name": "com.dtn.mesh",
       "sha256_cert_fingerprints": [
-        "5A:D6:FC:A4:3C:62:8A:EA:4B:37:8A:02:9E:CD:69:77:A8:12:1D:01:4D:B9:B7:C3:CE:F2:9C:EE:0C:CB:D0:BE"
+        "5A:D6:FC:A4:3C:62:8A:EA:4B:37:8A:02:9E:CD:69:77:A8:12:1D:01:4D:B9:B7:C3:CE:F2:9C:EE:0C:CB:D0:BE",
+        "04:D1:71:8E:5B:46:5E:CA:FC:91:71:99:8E:80:9C:AD:BE:3D:4E:50:CA:BE:B1:3C:7E:C8:4D:47:8D:0F:3F:56"
       ]
     }
   }

@@ -111,6 +111,11 @@ object AboutTeam {
         ),
     )
 
+    val mentor: TeamMember = TeamMember(
+        "Dr. Udit Narayana Kar", R.drawable.mentor_udit,
+        linkedIn = "https://in.linkedin.com/in/dr-udit-narayana-kar-3b090b21",
+    )
+
     /** What the app does (shown under "What we built"). */
     val built: List<String> = listOf(
         "Store-carry-forward delivery over Bluetooth LE and Wi-Fi Direct, phone to phone.",
@@ -180,6 +185,25 @@ fun AboutTeamPage(onBack: () -> Unit) {
             Spacer(Modifier.height(14.dp))
             PagerDots(pager, members.size, onSelect = { scope.launch { pager.animateScrollToPage(it) } },
                 label = { members[it].name })
+
+            Spacer(Modifier.height(24.dp))
+            Column(Modifier.padding(horizontal = 20.dp)) {
+                Text("Meet the mentor", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = DtnColors.TextTitle)
+                Spacer(Modifier.height(4.dp))
+                Text("Project guidance and mentorship.", style = DtnType.RowSubtitle)
+            }
+            Spacer(Modifier.height(16.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 36.dp),
+            ) {
+                MemberCard(
+                    member = AboutTeam.mentor,
+                    position = "Mentor",
+                    onOpen = open,
+                )
+            }
 
             Column(Modifier.padding(horizontal = 16.dp)) {
                 Spacer(Modifier.height(16.dp))
