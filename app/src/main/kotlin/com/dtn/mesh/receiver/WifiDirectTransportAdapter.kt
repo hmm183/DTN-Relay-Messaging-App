@@ -727,7 +727,7 @@ class WifiDirectTransportAdapter @Inject constructor(
     }
 
     private fun refreshState() {
-        val linked = (role == Role.OWNER || role == Role.MEMBER) && connectedPeers.isNotEmpty()
+        val linked = connectedPeers.isNotEmpty() || ((role == Role.OWNER || role == Role.MEMBER) && connectedPeers.isNotEmpty())
         _connectionState.value = when {
             !running -> MeshConnectionState.DISCONNECTED
             linked -> MeshConnectionState.CONNECTED
@@ -737,10 +737,11 @@ class WifiDirectTransportAdapter @Inject constructor(
 
     private fun publishLinkInfo() {
         val n = connectedPeers.size
-        val linked = if (n == 1) "1 phone linked" else "$n phones linked"
+        val linked = if (n == 1) "1 peer linked" else "$n peers linked"
         val summary = when {
             !running -> "Off"
             p2pEnabled == false -> "Waiting for Wi-Fi to come back on"
+            n > 0 -> "Linked via Wi-Fi · $linked"
             role == Role.OWNER && n > 0 -> "This phone runs the group · $linked"
             role == Role.OWNER -> "Group ready — waiting for DTN phones to join"
             role == Role.MEMBER && n > 0 -> "In ${groupOwnerHex?.let { "!$it's" } ?: "a"} group · $linked"
