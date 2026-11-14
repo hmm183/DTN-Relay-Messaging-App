@@ -30,7 +30,8 @@ fun deployValue(key: String): String =
     (localProps.getProperty(key) ?: (project.findProperty(key) as String?)
         ?: System.getenv(key.uppercase().replace('.', '_')) ?: "").trim()
 fun quoted(v: String) = "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
-val workerHost = deployValue("dtn.workerHost")
+val defaultWorkerHost = "dtnmesh.relaynetwork.workers.dev"
+val workerHost = deployValue("dtn.workerHost").ifBlank { defaultWorkerHost }
 
 android {
     namespace = "com.dtn.mesh"
@@ -56,9 +57,8 @@ android {
         buildConfigField("String", "DEFAULT_TURN_USERNAME", quoted(deployValue("dtn.defaultTurnUsername")))
         buildConfigField("String", "DEFAULT_TURN_CREDENTIAL", quoted(deployValue("dtn.defaultTurnCredential")))
         // The App Links intent filter needs one exact host (a *.workers.dev wildcard can't be
-        // verified: Android would look for assetlinks.json on workers.dev itself). ".invalid" is
-        // reserved and never resolves, so without a configured host the filter simply never verifies.
-        manifestPlaceholders["workerHost"] = workerHost.ifBlank { "dtnmesh.invalid" }
+        // verified: Android would look for assetlinks.json on workers.dev itself).
+        manifestPlaceholders["workerHost"] = workerHost
     }
 
     signingConfigs {

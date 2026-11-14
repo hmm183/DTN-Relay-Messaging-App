@@ -265,7 +265,36 @@ export default {
       return stub.fetch(request);
     }
 
-    // 3. Static Assets (.well-known/assetlinks.json, index.html, /c, /g)
+    // 3. Digital Asset Links (Android App Links domain verification)
+    if (url.pathname === "/.well-known/assetlinks.json") {
+      const assetlinks = JSON.stringify([
+        {
+          relation: ["delegate_permission/common.handle_all_urls"],
+          target: {
+            namespace: "android_app",
+            package_name: "com.dtn.mesh",
+            sha256_cert_fingerprints: [
+              "5A:D6:FC:A4:3C:62:8A:EA:4B:37:8A:02:9E:CD:69:77:A8:12:1D:01:4D:B9:B7:C3:CE:F2:9C:EE:0C:CB:D0:BE",
+              "04:D1:71:8E:5B:46:5E:CA:FC:91:71:99:8E:80:9C:AD:BE:3D:4E:50:CA:BE:B1:3C:7E:C8:4D:47:8D:0F:3F:56",
+              "1D:79:7E:72:2E:D3:49:AA:11:1B:36:96:9B:C9:CA:13:D4:54:DF:A9:2E:2A:C1:D2:26:2B:EA:37:39:F1:DE:64",
+              "FE:01:49:18:D1:E5:6F:46:FF:9E:2D:3E:D2:2A:C7:0E:57:D0:7D:0B:97:A7:6F:CE:12:11:14:89:FF:31:48:F6",
+              "8F:85:52:D6:C5:2F:0F:FE:99:88:7D:08:04:39:AB:3E:AB:3A:69:9A:AC:9D:85:C5:E0:5A:0F:32:DF:64:BC:E1"
+            ]
+          }
+        }
+      ], null, 2);
+
+      return new Response(assetlinks, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": "public, max-age=0, must-revalidate",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
+    }
+
+    // 4. Static Assets (index.html, /c, /g)
     if (url.pathname === "/c" || url.pathname === "/g") {
       // "/" not "/index.html": Workers assets redirect /index.html -> / (html_handling).
       url.pathname = "/";

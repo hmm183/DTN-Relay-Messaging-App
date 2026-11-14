@@ -1,0 +1,12 @@
+{
+  "name": "dtnmesh-cloud",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker for DTN Mesh Relay and App Links",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^4.162.0"
+  }
+}
